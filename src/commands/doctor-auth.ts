@@ -209,6 +209,8 @@ function formatOAuthRefreshFailureReason(reason: OAuthRefreshFailureReason | nul
   switch (reason) {
     case "refresh_token_reused":
       return "refresh_token_reused";
+    case "expired":
+      return "expired";
     case "invalid_grant":
       return "invalid_grant";
     case "sign_in_again":
@@ -399,6 +401,7 @@ function loadAuthProfileHealth(params: {
           ([profileId, local]) =>
             local.type !== "oauth" ||
             !shouldUseMainOwnerForLocalOAuthCredential({
+              profileId,
               local,
               main: findPersistedAuthProfileCredential({ profileId }),
             }),

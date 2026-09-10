@@ -9,14 +9,14 @@ import { createPluginMetadataSnapshotFixture } from "../plugins/plugin-metadata.
 import type { ProviderPlugin } from "../plugins/types.js";
 import { withOpenClawTestState } from "../test-utils/openclaw-test-state.js";
 import { planOpenClawModelsJsonSource } from "./models-config.js";
-import { planOpenClawModelsJsonWithDeps } from "./models-config.plan.test-support.js";
+import { planModelsJsonForTest } from "./models-config.plan.test-support.js";
+import * as modelsConfigProviders from "./models-config.providers.js";
 import { createPreparedModelCatalogWorkerInput } from "./prepared-model-catalog-worker.js";
 
-afterEach(clearRuntimeConfigSnapshot);
-
-type ResolveImplicitProviders = NonNullable<
-  NonNullable<Parameters<typeof planOpenClawModelsJsonWithDeps>[1]>["resolveImplicitProviders"]
->;
+afterEach(() => {
+  vi.restoreAllMocks();
+  clearRuntimeConfigSnapshot();
+});
 
 function model(id: string, input: Array<"text" | "image"> = ["text"]) {
   return {
@@ -49,17 +49,17 @@ describe("models config input presence", () => {
     },
   ] as const)("$name in the final generated models.json", async ({ sourceModels, expected }) => {
     const configuredProvider = {
-      baseUrl: "https://bedrock-runtime.us-east-1.amazonaws.com",
-      apiKey: "AWS_PROFILE",
+      baseUrl: "https://model-input.example/v1",
+      apiKey: "MODEL_INPUT_FIXTURE_KEY",
       models: [model("vision-model")],
     };
     const cfg: OpenClawConfig = {
-      models: { providers: { "amazon-bedrock": configuredProvider } },
+      models: { providers: { "model-input-fixture": configuredProvider } },
     };
     const sourceConfigForSecrets = {
       models: {
         providers: {
-          "amazon-bedrock": {
+          "model-input-fixture": {
             baseUrl: configuredProvider.baseUrl,
             apiKey: configuredProvider.apiKey,
             models: sourceModels,
@@ -67,27 +67,24 @@ describe("models config input presence", () => {
         },
       },
     } as unknown as OpenClawConfig;
-    const resolveImplicitProviders = vi.fn<ResolveImplicitProviders>(async () => ({
-      "amazon-bedrock": {
+    vi.spyOn(modelsConfigProviders, "resolveImplicitProviders").mockResolvedValue({
+      "model-input-fixture": {
         ...configuredProvider,
         models: [model("vision-model", ["text", "image"])],
       },
-    }));
+    });
 
-    const plan = await planOpenClawModelsJsonWithDeps(
-      {
-        cfg: sourceModels.length ? sourceConfigForSecrets : cfg,
-        discoveryAuthConfig: cfg,
-        sourceConfigForSecrets,
-        agentDir: "/tmp/openclaw-model-input-presence",
-        // Model-ID policies are part of this prepared merge fixture, not ambient discovery.
-        pluginMetadataSnapshot: createPluginMetadataSnapshotFixture(),
-        env: { AWS_PROFILE: "default" },
-        existingRaw: "",
-        existingParsed: {},
-      },
-      { resolveImplicitProviders },
-    );
+    const plan = await planModelsJsonForTest({
+      cfg: sourceModels.length ? sourceConfigForSecrets : cfg,
+      discoveryAuthConfig: cfg,
+      sourceConfigForSecrets,
+      agentDir: "/tmp/openclaw-model-input-presence",
+      // Model-ID policies are part of this prepared merge fixture, not ambient discovery.
+      pluginMetadataSnapshot: createPluginMetadataSnapshotFixture(),
+      env: { MODEL_INPUT_FIXTURE_KEY: "default" },
+      existingRaw: "",
+      existingParsed: {},
+    });
 
     expect(plan.action).toBe("write");
     if (plan.action !== "write") {
@@ -96,7 +93,7 @@ describe("models config input presence", () => {
     const generated = JSON.parse(plan.contents) as {
       providers: Record<string, { models?: Array<{ input?: string[] }> }>;
     };
-    expect(generated.providers["amazon-bedrock"]?.models?.[0]?.input).toEqual(expected);
+    expect(generated.providers["model-input-fixture"]?.models?.[0]?.input).toEqual(expected);
   });
 
   const liveCost = {
@@ -253,7 +250,7 @@ describe("models config input presence", () => {
       );
       // Workers retain the captured pair after losing the parent's process-local snapshot.
       clearRuntimeConfigSnapshot();
-      const plan = await planOpenClawModelsJsonWithDeps({
+      const plan = await planModelsJsonForTest({
         ...options,
         cfg: cloned.sourceConfigForSecrets,
         discoveryAuthConfig: cloned.input.config,
