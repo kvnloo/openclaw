@@ -578,6 +578,9 @@ export function createOpenClawTools(options?: OpenClawToolsOptions): AnyAgentToo
             // session as spawnedBy, so the parent check must use the same key.
             agentSessionKey: options?.runSessionKey ?? options?.agentSessionKey,
             agentChannel: options?.agentChannel,
+            requesterAccountId: options?.agentAccountId,
+            requesterTo: options?.currentChannelId ?? options?.agentTo,
+            requesterThreadId: options?.currentThreadTs ?? options?.agentThreadId,
             sandboxed: options?.sandboxed,
             config: sessionConfig,
           }),

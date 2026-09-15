@@ -4,11 +4,13 @@
  * Runs bounded ping-pong delivery, waits for target replies, and suppresses control-token messages.
  */
 import crypto from "node:crypto";
+import { normalizeOptionalStringifiedId } from "@openclaw/normalization-core/string-coerce";
 import { formatErrorMessage } from "../../infra/errors.js";
 import { createSubsystemLogger } from "../../logging/subsystem.js";
 import { splitMediaFromOutput } from "../../media/parse.js";
 import { normalizeAgentId } from "../../routing/session-key.js";
 import { parseAgentSessionKey } from "../../sessions/session-key-utils.js";
+import { INTERNAL_MESSAGE_CHANNEL } from "../../utils/message-channel.js";
 import { resolveNestedAgentLaneForSession } from "../lanes.js";
 import {
   type AgentWaitResult,
@@ -103,6 +105,10 @@ export async function runSessionsSendA2AFlow(params: {
   requesterSessionKey?: string;
   requesterAgentId?: string;
   requesterChannel?: string;
+  /** Requester live target/account/thread; used when the target announce route is internal-only. */
+  requesterAccountId?: string;
+  requesterTo?: string;
+  requesterThreadId?: string | number;
   sourceReplyDelivered?: true;
   roundOneReply?: string;
   waitRunId?: string;
@@ -176,13 +182,30 @@ export async function runSessionsSendA2AFlow(params: {
       callGateway: gatewayCall,
       agentId: params.targetAgentId,
     });
-    const targetChannel = announceTarget?.channel ?? "unknown";
+    // Target stored route can be an internal-only sink (stale WebChat) that Gateway
+    // send rejects as non-outbound. Fall back to the requester's live route so the
+    // completion still reaches a real destination.
+    const requesterAnnounceTarget: AnnounceTarget | undefined =
+      params.requesterChannel && params.requesterTo
+        ? {
+            channel: params.requesterChannel,
+            to: params.requesterTo,
+            accountId: params.requesterAccountId,
+            threadId: normalizeOptionalStringifiedId(params.requesterThreadId),
+          }
+        : undefined;
+    const deliverableAnnounceTarget =
+      announceTarget && announceTarget.channel !== INTERNAL_MESSAGE_CHANNEL
+        ? announceTarget
+        : (requesterAnnounceTarget ?? announceTarget);
+    const targetChannel =
+      deliverableAnnounceTarget?.channel ?? announceTarget?.channel ?? "unknown";
     const canDirectDeliverSameSessionReply =
       announceTarget &&
       (!params.requesterChannel || params.requesterChannel === announceTarget.channel);
-    if (sameSessionSourceReply && canDirectDeliverSameSessionReply) {
+    if (sameSessionSourceReply && canDirectDeliverSameSessionReply && deliverableAnnounceTarget) {
       await deliverAnnounceReply({
-        announceTarget,
+        announceTarget: deliverableAnnounceTarget,
         callGateway: gatewayCall,
         message: latestReply,
         runContextId,
@@ -265,14 +288,14 @@ export async function runSessionsSendA2AFlow(params: {
       callGateway: gatewayCall,
     });
     if (
-      announceTarget &&
+      deliverableAnnounceTarget &&
       announceReply &&
       announceReply.trim() &&
       !isAnnounceSkip(announceReply) &&
       !isNonDeliverableSessionsReply(announceReply)
     ) {
       await deliverAnnounceReply({
-        announceTarget,
+        announceTarget: deliverableAnnounceTarget,
         callGateway: gatewayCall,
         message: announceReply,
         runContextId,
