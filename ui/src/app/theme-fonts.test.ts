@@ -94,9 +94,10 @@ describe("typeface presentation", () => {
     expect(fontLinks()).toEqual(specimens);
   });
 
-  it("places the shared Vietnamese fallback immediately after every bundled face", () => {
+  it("places the shared Vietnamese fallback after proportional bundled faces only", () => {
     for (const [id, typeface] of Object.entries(TYPEFACES)) {
-      if (id === "system") {
+      // System and mono stacks stay Noto-free so code/CRT metrics stay fixed-width.
+      if (id === "system" || id === "jetbrains-mono") {
         expect(typeface.stack).not.toContain("Noto Sans");
       } else {
         expect(typeface.stack).toContain('"Noto Sans"');

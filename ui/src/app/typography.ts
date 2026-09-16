@@ -41,10 +41,14 @@ const TYPEFACE_METADATA: Record<
 export const TYPEFACES = Object.fromEntries(
   UI_APPEARANCE_TYPEFACE_VALUES.map((id) => {
     const { label, family = label, kind } = TYPEFACE_METADATA[id];
+    // Proportional Noto must stay out of mono stacks: JetBrains Mono omits
+    // letters such as U+1EBF, and a variable-width fallback breaks code alignment.
     const stack =
       id === "system"
         ? FONT_FALLBACKS.sans
-        : `"${family}", "${VIETNAMESE_FALLBACK.family}", ${FONT_FALLBACKS[kind]}`;
+        : kind === "mono"
+          ? `"${family}", ${FONT_FALLBACKS[kind]}`
+          : `"${family}", "${VIETNAMESE_FALLBACK.family}", ${FONT_FALLBACKS[kind]}`;
     return [id, { label, stack, asset: id === "system" ? undefined : `fonts/${id}.css` }] as const;
   }),
   // SAFETY: Mapping the complete wire tuple emits one typed entry for every TypefaceId.
