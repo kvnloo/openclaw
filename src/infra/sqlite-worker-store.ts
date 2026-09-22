@@ -3,7 +3,8 @@ import { resolveGlobalSingleton } from "../shared/global-singleton.js";
 import { hydrateOpenClawStateWorkerError } from "../state/openclaw-state-worker-error.js";
 import { SqliteWorkerBroker } from "./sqlite-worker-broker.js";
 import type {
-  PreparedSqliteWorkerOpen,
+  SqliteWorkerInputPreparation,
+  SqliteWorkerOpenCustody,
   SqliteWorkerStoreOptions,
 } from "./sqlite-worker-broker.types.js";
 import {
@@ -11,6 +12,10 @@ import {
   type SqliteWorkerOperations,
   type SqliteWorkerStore,
 } from "./sqlite-worker-contract.js";
+import {
+  createSqliteWorkerOperationAdmission,
+  type SqliteWorkerAdmissionFactory,
+} from "./sqlite-worker-operation-admission.js";
 import type { SqliteWorkerStateContext } from "./sqlite-worker-state-context.js";
 
 function withCallerErrors<T>(result: Promise<T>): Promise<T> {
@@ -49,6 +54,8 @@ export function runSqliteWorkerStoreOperation<Operations extends SqliteWorkerOpe
   operation: (scope: Pick<SqliteWorkerStore<Operations>, "execute">) => T | Promise<T>,
   stateContext?: SqliteWorkerStateContext,
   assertCurrent?: (commandType: PropertyKey) => void,
+  createAdmission?: SqliteWorkerAdmissionFactory,
+  requireStateLifecycle = false,
 ): Promise<T> {
   return withCallerErrors(
     resolveSqliteWorkerBroker().runOperation(
@@ -56,6 +63,8 @@ export function runSqliteWorkerStoreOperation<Operations extends SqliteWorkerOpe
       (scope) => operation(bindCallerExecute(scope)),
       stateContext,
       assertCurrent,
+      createAdmission,
+      requireStateLifecycle,
     ),
   );
 }
@@ -68,9 +77,72 @@ function resolveSqliteWorkerBroker() {
   );
 }
 
+export type { SqliteWorkerInputPreparation } from "./sqlite-worker-broker.types.js";
+
+/** Charge captured input before actor preparation can yield, then hand it to normal dispatch. */
+export function reserveSqliteWorkerInputPreparation(bytes: number): SqliteWorkerInputPreparation {
+  return resolveSqliteWorkerBroker().reserveInputPreparation(bytes);
+}
+
+/**
+ * Retain an admitted writer through native settlement. Backends request authority
+ * after BEGIN and again immediately before COMMIT; the host never joins a native
+ * writer lock. A successful commit grant linearizes against subsequent revocation.
+ */
+export function runSqliteWorkerStoreWrite<Operations extends SqliteWorkerOperations, T>(
+  store: SqliteWorkerStore<Operations>,
+  operation: (scope: Pick<SqliteWorkerStore<Operations>, "execute">) => Promise<T>,
+  assertCurrent: () => void,
+  nativeLocations: readonly string[],
+): Promise<T> {
+  return runSqliteWorkerStoreOperation(
+    store,
+    operation,
+    undefined,
+    assertCurrent,
+    createSqliteWorkerWriteAdmission(assertCurrent, nativeLocations),
+  );
+}
+
+export function createSqliteWorkerWriteAdmission(
+  assertCurrent: () => void,
+  nativeLocations: readonly string[],
+): SqliteWorkerAdmissionFactory {
+  return () => {
+    let phase: "waiting" | "transaction" | "commit" = "waiting";
+    return {
+      nativeLocations,
+      admission: createSqliteWorkerOperationAdmission((request, grant) => {
+        if (
+          !(
+            (phase === "waiting" && request.stage === "transaction") ||
+            (phase === "transaction" && request.stage === "commit")
+          )
+        ) {
+          throw new Error("SQLite worker write authority requested out of order");
+        }
+        assertCurrent();
+        if (!grant()) {
+          throw new Error("SQLite worker write authority expired");
+        }
+        phase = phase === "waiting" ? "transaction" : "commit";
+      }),
+    };
+  };
+}
+
 /** Read the broker's recorded lifecycle state without probing native storage. */
 export function isSqliteWorkerStoreAvailable(store: object): boolean {
   return resolveSqliteWorkerBroker().isAvailable(store);
+}
+
+/** Internal identity for the existing canonical actor, never a transferable authority. */
+export function getSqliteWorkerActorIdentity(store: object): object {
+  return resolveSqliteWorkerBroker().getActorIdentity(store);
+}
+
+export function retireSqliteWorkerActor(identity: object): Promise<void> {
+  return withCallerErrors(resolveSqliteWorkerBroker().retireActor(identity));
 }
 
 /** Recorded orphan custody at its original shared-state opening path. */
@@ -106,12 +178,81 @@ export function openSqliteWorkerStore<Operations extends SqliteWorkerOperations>
   return resolveSqliteWorkerBroker().open<Operations>(options);
 }
 
+/**
+ * Open a foreign/plugin database on an isolated admission + worker lane.
+ *
+ * Narrow contract: existing-only reads against paths outside OpenClaw state
+ * (e.g. macOS Messages chat.db). Physical DB ownership stays on the single
+ * shared registry so same-file / hardlink / backend-mismatch / replaced-path
+ * checks still apply across lanes. Isolated open scheduling and lane-aware
+ * worker slots keep a wedged foreign open from stalling shared OpenClaw
+ * SQLite opens or pinning shared-store workers (#148750).
+ */
+export function openIsolatedSqliteWorkerStore<Operations extends SqliteWorkerOperations>(
+  options: SqliteWorkerStoreOptions & { existingOnly: true },
+): Promise<SqliteWorkerStore<Operations> | undefined> {
+  if (!isMainThread) {
+    return Promise.reject(
+      new SqliteWorkerError(
+        "SQLite stores in application workers require the host broker connection",
+        "unavailable",
+      ),
+    );
+  }
+  if (options.existingOnly !== true) {
+    return Promise.reject(
+      new SqliteWorkerError(
+        "Isolated SQLite admission is existing/foreign read-only; use openSqliteWorkerStore to create",
+        "unavailable",
+      ),
+    );
+  }
+  return resolveSqliteWorkerBroker().open<Operations>(
+    options,
+    undefined,
+    undefined,
+    {},
+    "isolated",
+  );
+}
+
+/** Admit the canonical per-agent execution group through its retained host owner. */
+export function openAgentDatabaseSqliteWorkerStore<Operations extends SqliteWorkerOperations>(
+  options: SqliteWorkerStoreOptions,
+  custody: {
+    stateContext?: SqliteWorkerStateContext;
+    stateDatabasePath?: string;
+    onNativeStopped?: (stopped: Promise<void>) => void;
+    assertCurrent(): void;
+    createAdmission: SqliteWorkerAdmissionFactory;
+  },
+): Promise<SqliteWorkerStore<Operations> | undefined> {
+  if (!isMainThread) {
+    return Promise.reject(
+      new SqliteWorkerError("Agent admission requires its host owner", "unavailable"),
+    );
+  }
+  custody.assertCurrent();
+  return withCallerErrors(
+    resolveSqliteWorkerBroker().open<Operations>(
+      options,
+      custody.stateContext,
+      () => custody.assertCurrent(),
+      {
+        createAdmission: custody.createAdmission,
+        stateDatabasePath: custody.stateDatabasePath,
+        onNativeStopped: custody.onNativeStopped,
+      },
+    ),
+  );
+}
+
 /** Host-internal admission for the canonical shared-state actor. */
 export function openSharedStateSqliteWorkerStore<Operations extends SqliteWorkerOperations>(
   options: Omit<SqliteWorkerStoreOptions, "input">,
   stateContext: SqliteWorkerStateContext,
   assertCurrent?: () => void,
-  lifecycle?: Pick<PreparedSqliteWorkerOpen, "maintenanceScope" | "retainCleanup">,
+  lifecycle?: SqliteWorkerOpenCustody,
 ): Promise<SqliteWorkerStore<Operations> | undefined> {
   if (!isMainThread) {
     return Promise.reject(

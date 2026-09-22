@@ -1,10 +1,9 @@
-import { getDeliveryQueueEntryStatus } from "../../../infra/delivery-queue-sqlite.js";
+import { captureOperatorToolGatewayContinuationContext } from "../../../gateway/server-plugin-in-process-dispatch.js";
 import type { DeliveryQueueStoredStatus } from "../../../infra/delivery-queue-sqlite.kernel.js";
 import { scheduleSessionDelivery } from "../../../infra/session-delivery-queue-runtime.js";
 import { releaseSessionDeliveryClaim } from "../../../infra/session-delivery-queue-storage.js";
 import {
   prepareClaimedSessionDelivery,
-  SESSION_DELIVERY_QUEUE_NAME,
   type QueuedSessionDelivery,
   type QueuedSessionDeliveryPayload,
   type SessionDeliverySettledOutcome,
@@ -130,8 +129,7 @@ export function admitCorrelatedSubagentSessionDelivery(params: {
     task: projectedTask,
   });
   publishCommittedRecords(subagent, projectedTask);
-  const status = getDeliveryQueueEntryStatus(SESSION_DELIVERY_QUEUE_NAME, queueEntry.id);
-  return { id: queueEntry.id, claimed: admission.claimed, status: status ?? "pending" };
+  return { id: queueEntry.id, ...admission };
 }
 
 export function resolveCorrelatedSubagentDelivery(
@@ -252,16 +250,31 @@ export async function retrySubagentCompletionDelivery(
     suspendedAt: undefined,
     suspendedReason: undefined,
     attemptCount: 0,
+    lastDropReason: undefined,
     lastError: undefined,
     nextAttemptAt: undefined,
   });
   redrive.cleanupHandled = false;
   const projectedTask = projectRedrivenTask(task, redrive, "pending", now);
-  settleSubagentCompletionDelivery({ subagent: redrive, task: projectedTask, databaseOptions });
-  publishCommittedRecords(redrive, projectedTask);
-  const { resumeSubagentRun } = await import("../registry/subagent-registry.js");
-  resumeSubagentRun(redrive.runId);
-  return { ok: true, task: getTaskById(taskId), duplicateRisk: true };
+  // An explicit retry is a fresh admitted operation, never a revival of the expired source.
+  const continuation = captureOperatorToolGatewayContinuationContext();
+  let transferred = false;
+  try {
+    settleSubagentCompletionDelivery({ subagent: redrive, task: projectedTask, databaseOptions });
+    // The committed new generation owns the caller before publication can schedule delivery.
+    if (continuation?.operatorAuthority) {
+      subagentRuns.bindCompletionAuthority(current, continuation);
+      transferred = true;
+    }
+    publishCommittedRecords(redrive, projectedTask);
+    const { resumeSubagentRun } = await import("../registry/subagent-registry.js");
+    resumeSubagentRun(redrive.runId);
+    return { ok: true, task: getTaskById(taskId), duplicateRisk: true };
+  } finally {
+    if (!transferred) {
+      continuation?.release();
+    }
+  }
 }
 
 export async function dismissSubagentCompletionDelivery(

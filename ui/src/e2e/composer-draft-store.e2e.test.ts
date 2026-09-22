@@ -1,8 +1,14 @@
 import type { Page } from "playwright";
 import { expect, it } from "vitest";
 import { installMockGateway, startControlUiE2eServer } from "../test-helpers/control-ui-e2e.ts";
+import {
+  captureUiProof,
+  chatSessionListResponse,
+  controlUiSessionUrl,
+} from "./chat-flow.test-support.ts";
 import { verifyDurableComposerFences } from "./composer-draft-fences.test-support.ts";
 import { createControlUiE2eSuite } from "./control-ui-e2e-suite.test-support.ts";
+import { waitForCommittedComposerDraft } from "./settle.test-support.ts";
 
 const suite = createControlUiE2eSuite({
   name: "Control UI durable composer draft storage",
@@ -65,6 +71,58 @@ async function rawDraftRecords(page: Page, scopes: readonly TestDraftScope[], ex
 }
 
 suite.define(() => {
+  it("does not replace a newer saved split draft when an older pane returns after eviction", async () => {
+    await suite.withPage(
+      { locale: "en-US", serviceWorkers: "block", viewport: { width: 1440, height: 900 } },
+      async ({ page }) => {
+        const sessionKey = "agent:main:session-a";
+        await installMockGateway(page, {
+          sessionKey,
+          methodResponses: {
+            "sessions.list": chatSessionListResponse(
+              ["a", "b", "c", "d"].map((letter, index) => ({
+                key: `agent:main:session-${letter}`,
+                kind: "direct",
+                label: `Session ${letter.toUpperCase()}`,
+                updatedAt: 4 - index,
+              })),
+            ),
+          },
+        });
+        await page.goto(controlUiSessionUrl(suite.server.baseUrl, sessionKey));
+        await page.getByRole("button", { name: "Open split view", exact: true }).click();
+        const cells = page.locator(".chat-split-view__cell");
+        const left = cells.nth(0).getByRole("textbox", { name: "Chat composer" });
+        const right = cells.nth(1).getByRole("textbox", { name: "Chat composer" });
+        await expect.poll(() => left.count()).toBe(1);
+        await left.fill("OLDER LEFT DRAFT");
+        const scopeKey = `chat:v3:${sessionKey}\u0000agent:main`;
+        await waitForCommittedComposerDraft(page, scopeKey, "OLDER LEFT DRAFT", 0);
+        await right.fill("NEWER RIGHT DRAFT");
+        await waitForCommittedComposerDraft(page, scopeKey, "NEWER RIGHT DRAFT", 0);
+        await left.click();
+        for (const letter of ["b", "c", "d", "a"]) {
+          await page
+            .locator(
+              `.sidebar-recent-session[data-session-key="agent:main:session-${letter}"] a.sidebar-recent-session__link`,
+            )
+            .click();
+          await expect
+            .poll(() => new URL(page.url()).pathname)
+            .toBe(
+              new URL(controlUiSessionUrl(suite.server.baseUrl, `agent:main:session-${letter}`))
+                .pathname,
+            );
+        }
+        await expect.poll(() => left.inputValue()).toBe("NEWER RIGHT DRAFT");
+        await expect.poll(() => right.inputValue()).toBe("NEWER RIGHT DRAFT");
+        await page.reload();
+        await expect.poll(() => left.inputValue()).toBe("NEWER RIGHT DRAFT");
+        await captureUiProof(suite, page, "split-draft-eviction", "after.png");
+      },
+    );
+  });
+
   it("does not reuse a cached composer owner while reconnect authentication is unresolved", async () => {
     await suite.withPage({ locale: "en-US", serviceWorkers: "block" }, async ({ page }) => {
       await installMockGateway(page);
@@ -366,6 +424,109 @@ suite.define(() => {
         });
       },
     );
+  });
+
+  it("keeps question drafts scoped, bounded, and retired with their conversation", async () => {
+    await suite.withPage({ locale: "en-US", serviceWorkers: "block" }, async ({ page }) => {
+      await installMockGateway(page);
+      await page.goto(`${suite.server.baseUrl}settings`);
+      const storeHandle = await page.evaluateHandle<
+        typeof import("../lib/chat/composer-draft-store.runtime.ts")
+      >('import("/src/lib/chat/composer-draft-store.runtime.ts")');
+      const result = await page.evaluate(async (store) => {
+        const parent = {
+          gatewayOwner: "question-fixture",
+          recoveryScope: "person-a",
+          scopeKey: "chat:v3:agent:main:one\u0000agent:main",
+        };
+        const scope = { ...parent, scopeKey: `questions:v1:${parent.scopeKey}` };
+        const payload = {
+          text: "",
+          attachments: [],
+          questionDrafts: [
+            {
+              itemId: "audience",
+              signature: "fixture",
+              edited: true,
+              answers: [{ selected: [], freeText: "My team" }],
+            },
+          ],
+        };
+        await store.writeDurableComposerDraft(
+          scope,
+          { ...payload, revision: 1 },
+          { expectedRevision: 0, writeId: "first" },
+        );
+        const recovery = await store.prepareDurableComposerRecovery(parent);
+        const read = await store.readDurableComposerDraft(scope);
+        const other = await store.readDurableComposerDraft({ ...scope, recoveryScope: "person-b" });
+        await store.retireDurableComposerDraft(parent);
+        const retired = await store.readDurableComposerDraft(scope);
+        const stale = await store.writeDurableComposerDraft(
+          scope,
+          { ...payload, revision: 2 },
+          { expectedRevision: 1, writeId: "late" },
+        );
+        // The owner budget evicts by updatedAt, not revision. Real writes can share
+        // one millisecond, so give each fixture row a distinct timestamp like the
+        // existing composer fence scenario, without depending on IDB key tie order.
+        const boundedScopes = Array.from({ length: 21 }, (_, index) => ({
+          ...scope,
+          scopeKey: `questions:v1:chat:v3:agent:main:bounded-${index}\u0000agent:main`,
+        }));
+        const originalNow = Date.now;
+        let now = originalNow();
+        const writes = [];
+        try {
+          Date.now = () => ++now;
+          for (const [index, boundedScope] of boundedScopes.entries()) {
+            writes.push(
+              await store.writeDurableComposerDraft(
+                boundedScope,
+                { ...payload, revision: index + 10 },
+                { expectedRevision: 0, writeId: `bounded-${index}` },
+              ),
+            );
+          }
+        } finally {
+          Date.now = originalNow;
+        }
+        const bounded = await Promise.all(
+          boundedScopes.map((boundedScope) => store.readDurableComposerDraft(boundedScope)),
+        );
+        return {
+          recovery,
+          read,
+          other,
+          retired,
+          stale,
+          oldest: bounded[0],
+          active: bounded.filter((storedDraft) => storedDraft.status === "found").length,
+          writes: writes.map((write) => write.status),
+          expireScope: {
+            ...scope,
+            scopeKey: "questions:v1:chat:v3:agent:main:bounded-20\u0000agent:main",
+          },
+        };
+      }, storeHandle);
+      expect(result.recovery).toEqual({ status: "ready", entries: [] });
+      expect(result.read).toMatchObject({
+        status: "found",
+        draft: { questionDrafts: [{ answers: [{ freeText: "My team" }] }] },
+      });
+      expect(result.other.status).toBe("not-found");
+      expect(result.retired.status).toBe("not-found");
+      expect(result.stale.status).toBe("conflict");
+      expect(result.writes).toEqual(Array.from({ length: 21 }, () => "persisted"));
+      expect(result.active).toBe(20);
+      expect(result.oldest?.status).toBe("not-found");
+      await rawDraftRecords(page, [result.expireScope], true);
+      const expired = await page.evaluate(
+        ({ store, scope }) => store.readDurableComposerDraft(scope),
+        { store: storeHandle, scope: result.expireScope },
+      );
+      expect(expired.status).toBe("not-found");
+    });
   });
 
   it("expires drafts across abandoned credential owners on the next database open", async () => {
