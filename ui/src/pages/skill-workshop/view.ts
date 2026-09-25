@@ -22,16 +22,11 @@ import { renderSkillDocument, renderSkillWorkshopCollection } from "./collection
 import { renderSkillWorkshopEmptyDetail, renderWorkshopEmptyState } from "./empty-states.ts";
 import { renderSkillWorkshopEvaluation } from "./evaluation-view.ts";
 import { renderSkillWorkshopProposalList } from "./proposal-list.ts";
+import { groupByRecency } from "./recency-sections.ts";
 import { renderSelfLearningError } from "./self-learning.ts";
 import type { SkillWorkshopProps } from "./view-types.ts";
 
 registerSkillWorkshopEnglish();
-
-const GROUP_LABEL: Record<SkillWorkshopProposal["recencyGroup"], string> = {
-  today: "skillWorkshop.recency.today",
-  yesterday: "skillWorkshop.recency.yesterday",
-  earlier: "skillWorkshop.recency.earlier",
-};
 
 type SkillWorkshopSection = {
   groups: Array<{ label: string; items: SkillWorkshopProposal[] }>;
@@ -408,21 +403,6 @@ function renderPendingActions(props: SkillWorkshopProps, proposal: SkillWorkshop
 
 function resolveSkillWorkshopAgentName(props: SkillWorkshopProps, fallback: string): string {
   return props.workshopAgentName.trim() || props.assistantName.trim() || fallback;
-}
-
-function groupByRecency(
-  proposals: SkillWorkshopProposal[],
-): Array<{ label: string; items: SkillWorkshopProposal[] }> {
-  const buckets = new Map<SkillWorkshopProposal["recencyGroup"], SkillWorkshopProposal[]>();
-  for (const proposal of proposals) {
-    const list = buckets.get(proposal.recencyGroup) ?? [];
-    list.push(proposal);
-    buckets.set(proposal.recencyGroup, list);
-  }
-  const order: Array<SkillWorkshopProposal["recencyGroup"]> = ["today", "yesterday", "earlier"];
-  return order
-    .filter((key) => buckets.has(key))
-    .map((key) => ({ label: GROUP_LABEL[key], items: buckets.get(key) ?? [] }));
 }
 
 function queueEmptyText(props: SkillWorkshopProps): string {
