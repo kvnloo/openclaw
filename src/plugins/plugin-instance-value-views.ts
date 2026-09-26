@@ -102,7 +102,8 @@ function isPluginData(value: unknown, seen?: Set<object>): boolean {
   ) {
     return false;
   }
-  let nested: object[] | undefined;
+  let firstChild: object | undefined;
+  let moreChildren: object[] | undefined;
   // A callable or accessor already requires a view. Check direct members before
   // walking large data graphs attached to tool metadata and execution contexts.
   for (const key of Reflect.ownKeys(value)) {
@@ -111,18 +112,25 @@ function isPluginData(value: unknown, seen?: Set<object>): boolean {
       return false;
     }
     if (descriptor.value && typeof descriptor.value === "object") {
-      (nested ??= []).push(descriptor.value);
+      if (firstChild === undefined) {
+        firstChild = descriptor.value;
+      } else {
+        (moreChildren ??= []).push(descriptor.value);
+      }
     }
   }
-  if (!nested && native !== Map && native !== Set) {
+  if (!firstChild && native !== Map && native !== Set) {
     // Repeated leaves in an existing graph still share its completed classification.
     seen?.add(value);
     return true;
   }
   const visited = seen ?? new Set<object>();
   visited.add(value);
-  if (nested) {
-    for (const child of nested) {
+  if (firstChild && !isPluginData(firstChild, visited)) {
+    return false;
+  }
+  if (moreChildren) {
+    for (const child of moreChildren) {
       if (!isPluginData(child, visited)) {
         return false;
       }
@@ -211,6 +219,7 @@ export function createPluginValueView(
     hasToken: (token: object) => boolean;
   },
   admit: <T>(run: () => T) => T,
+  admitCallback: <T>(run: () => T) => T,
 ) {
   const wrapped = new WeakMap<object, unknown>();
   const derivedReceivers = new WeakSet<object>();
@@ -220,7 +229,7 @@ export function createPluginValueView(
     originalValues: bindings.originalValues,
     wrapped,
     wrap: (value) => wrap(value),
-    invoke: (callback) => admit(() => bindings.invoke(callback)),
+    invoke: admitCallback,
   });
   const wrapResult = <T>(result: T, callerData?: unknown[]): T => {
     const completion = resolvePluginReturnPromise(result);
@@ -284,17 +293,16 @@ export function createPluginValueView(
       const invoke = <R>(run: () => R): R =>
         iteration?.active ? iteration.invoke(run) : admit(run);
       let resolvedReceiver = receiver;
-      const property = (() => {
-        try {
-          resolvedReceiver = resolveReceiver(key, receiver);
-          return readPluginMember(object, key, invoke, resolvedReceiver);
-        } catch (error) {
-          if (key === "return" && iteration?.active) {
-            iteration.close();
-          }
-          throw error;
+      let property: unknown;
+      try {
+        resolvedReceiver = resolveReceiver(key, receiver);
+        property = readPluginMember(object, key, invoke, resolvedReceiver);
+      } catch (error) {
+        if (key === "return" && iteration?.active) {
+          iteration.close();
         }
-      })();
+        throw error;
+      }
       if (key === "return" && iteration && typeof property !== "function") {
         if (property == null) {
           return (...args: unknown[]) => iteration.call(key, undefined, args);
@@ -506,12 +514,27 @@ export function createPluginValueView(
       }
       return undefined;
     };
-    const invoke = <T>(run: () => T): T => {
+    const assertActive = () => {
       if (!active || !bindings.hasToken(token)) {
         throw new Error(`Plugin ${bindings.instance.pluginId} stream is closed`);
       }
+    };
+    const invoke = <T>(run: () => T): T => {
+      assertActive();
       pending += 1;
       return bindings.invoke(run, { token, release: releaseOperation });
+    };
+    const readResultMember = (result: object, key: "done" | "value"): unknown => {
+      assertActive();
+      const descriptor = !types.isProxy(result) && Object.getOwnPropertyDescriptor(result, key);
+      if (descriptor && "value" in descriptor) {
+        const value: unknown = descriptor.value;
+        // Primitive data cannot execute plugin code or require thenable settlement.
+        if (value === null || (typeof value !== "object" && typeof value !== "function")) {
+          return value;
+        }
+      }
+      return invoke(() => Reflect.get(result, key));
     };
     const admission: PluginIteratorAdmission = {
       get done() {
@@ -552,7 +575,7 @@ export function createPluginValueView(
             if (next === null || (typeof next !== "object" && typeof next !== "function")) {
               throw new TypeError("Plugin async iterator result must be an object");
             }
-            const complete = Boolean(invoke(() => Reflect.get(next, "done")));
+            const complete = Boolean(readResultMember(next, "done"));
             // IteratorClose ends this admission even when a generator yields in finally.
             // A later explicit next can acquire a new lease only while the instance is live.
             state = complete ? "done" : key === "return" ? "returned" : state;
@@ -560,8 +583,7 @@ export function createPluginValueView(
               // The consumer reads completion after the last call may have joined disposal.
               done: complete,
               get value() {
-                const read = (): unknown => Reflect.get(next, "value");
-                return active ? invoke(read) : read();
+                return active ? readResultMember(next, "value") : Reflect.get(next, "value");
               },
             };
           } catch (error) {
