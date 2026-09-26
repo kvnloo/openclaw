@@ -14,6 +14,7 @@ import {
   HEARTBEAT_SKIP_PREEMPTED,
   HEARTBEAT_SKIP_REQUESTS_IN_FLIGHT,
   requestHeartbeat,
+  requestHeartbeatAndWait,
   setHeartbeatWakeHandler,
 } from "./heartbeat-wake.js";
 
@@ -561,6 +562,56 @@ describe("startHeartbeatRunner", () => {
     await pokeIntervalWake("main", intervalMs);
     expect(runSpy).toHaveBeenCalledTimes(5);
 
+    runner.stop();
+  });
+
+  it("flood guard trips via registered handler after a backward clock step", async () => {
+    useFakeHeartbeatTime();
+    const runSpy = vi.fn().mockResolvedValue({ status: "ran", durationMs: 1 } as const);
+    const intervalMs = 30 * 60_000;
+    const runner = startHeartbeatRunner({
+      cfg: heartbeatConfig([{ id: "main", heartbeat: { every: "30m" } }]),
+      runOnce: runSpy,
+    });
+
+    // Manual wakes bypass flood while still using scheduler recordRunBookkeeping,
+    // so lastRun always equals the final recorded start (reachable insertion order).
+    const manualAt = async (ts: number) => {
+      vi.setSystemTime(new Date(ts));
+      await requestHeartbeatAndWait({
+        source: "manual",
+        intent: "manual",
+        reason: "manual",
+        agentId: "main",
+        coalesceMs: 0,
+      });
+    };
+
+    await manualAt(990_000);
+    await manualAt(935_000); // backward wall-clock step
+    await manualAt(945_000);
+    await manualAt(955_000);
+    await manualAt(965_000);
+    await manualAt(969_999);
+    expect(runSpy).toHaveBeenCalledTimes(6);
+
+    vi.setSystemTime(new Date(1_000_000));
+    const deferral = await requestHeartbeatAndWait({
+      source: "interval",
+      intent: "scheduled",
+      reason: "interval",
+      agentId: "main",
+      scheduledEveryMs: intervalMs,
+      coalesceMs: 0,
+    });
+
+    // Redacted after-fix: flood deferral/retry time from the registered handler.
+    expect(runSpy).toHaveBeenCalledTimes(6);
+    expect(deferral).toEqual({
+      status: "skipped",
+      reason: "flood",
+      retryAtMs: 1_005_001,
+    });
     runner.stop();
   });
 
