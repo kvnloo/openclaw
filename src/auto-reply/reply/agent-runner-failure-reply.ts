@@ -15,6 +15,7 @@ import {
   describeFailoverError,
   findCliTerminalStopError,
   findCliTimeoutError,
+  hasLocalWorkerTaskTimeout,
   isFailoverError,
 } from "../../agents/failover-error.js";
 import { renderAssistantRequestFailureCopy } from "../../agents/failover/assistant-request-failure-copy.js";
@@ -386,6 +387,12 @@ export function buildExternalRunFailureReply(
   const codexAppServerFailure = buildCodexAppServerFailureText(normalizedMessage);
   if (codexAppServerFailure) {
     return { text: codexAppServerFailure, isGenericRunnerFailure: false };
+  }
+  if (failoverFacts.reason === "timeout" && hasLocalWorkerTaskTimeout(error)) {
+    return {
+      text: "A local worker task timed out. Please try again.",
+      isGenericRunnerFailure: false,
+    };
   }
   const classifiedFailure = renderAssistantRequestFailureCopy(failoverFacts);
   if (classifiedFailure) {
