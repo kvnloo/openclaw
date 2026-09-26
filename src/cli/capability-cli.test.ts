@@ -9,6 +9,12 @@ import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
 import type { ModelCatalogEntry } from "../agents/model-catalog.types.js";
 import type { inspectLocalAudioSelection } from "../media-understanding/local-audio.js";
 import { registerCapabilityCli } from "./capability-cli.js";
+import {
+  runCap,
+  runCapability,
+  runCapabilityWithParentAgent,
+  runModelAuthWithAgent,
+} from "./capability-cli.test-harness.js";
 import { CAPABILITY_METADATA } from "./capability-cli/metadata.js";
 
 const PNG_1X1_BASE64 =
@@ -21,36 +27,6 @@ function createIsomBrandBuffer(brand: "hevc" | "msf1"): Buffer {
   buffer.write("ftyp", 4, "ascii");
   buffer.write(brand, 8, "ascii");
   return buffer;
-}
-
-async function runCap(...argv: string[]): Promise<void> {
-  const program = new Command();
-  await registerCapabilityCli(program, ["node", "openclaw", ...argv]);
-  await program.parseAsync(argv, { from: "user" });
-}
-
-function runCapability(domain: string, action: string, ...argv: string[]): Promise<void> {
-  return runCap("capability", domain, action, ...argv);
-}
-
-function runCapabilityWithParentAgent(
-  domain: string,
-  action: string,
-  agent: string,
-  ...argv: string[]
-): Promise<void> {
-  return runCap("capability", domain, "--agent", agent, action, ...argv);
-}
-
-function runModelAuthWithAgent(
-  position: "parent" | "leaf",
-  action: "login" | "logout" | "status",
-  agent: string,
-  ...argv: string[]
-): Promise<void> {
-  return position === "parent"
-    ? runCap("capability", "model", "--agent", agent, "auth", action, ...argv)
-    : runCap("capability", "model", "auth", action, "--agent", agent, ...argv);
 }
 
 function primeOpenAiAuthProfile(mode: "api-key" | "token" = "api-key"): void {
@@ -206,7 +182,7 @@ const mocks = vi.hoisted(() => ({
         : {}),
     }),
   ),
-  getProviderEnvVars: vi.fn((providerId: string) => [
+  getProviderEnvVarsCore: vi.fn((providerId: string) => [
     `${providerId.toUpperCase().replaceAll("-", "_")}_API_KEY`,
   ]),
   embedBatch: vi.fn(async (inputs: unknown[], options?: { inputType?: string }) =>
@@ -292,7 +268,7 @@ vi.mock("../runtime.js", async (importOriginal) => ({
 }));
 
 vi.mock("../secrets/provider-env-vars.js", () => ({
-  getProviderEnvVars: mocks.getProviderEnvVars,
+  getProviderEnvVarsCore: mocks.getProviderEnvVarsCore,
   resolveProviderAuthLookupMaps: () => ({
     aliasMap: {},
     envCandidateMap: {},
@@ -698,7 +674,7 @@ describe("capability cli", () => {
     mocks.getTtsProvider.mockReset().mockReturnValue("openai");
     mocks.listSpeechProviders.mockReset().mockReturnValue([]);
     mocks.resolveExplicitTtsOverrides.mockClear();
-    mocks.getProviderEnvVars
+    mocks.getProviderEnvVarsCore
       .mockReset()
       .mockImplementation((providerId: string) => [
         `${providerId.toUpperCase().replaceAll("-", "_")}_API_KEY`,
@@ -1032,7 +1008,7 @@ describe("capability cli", () => {
     expect(providers).toContainEqual(
       expect.objectContaining({ provider: "openai", configured: true }),
     );
-    expect(mocks.getProviderEnvVars).toHaveBeenCalledWith("openai");
+    expect(mocks.getProviderEnvVarsCore).toHaveBeenCalledWith("openai");
   });
 
   it("scopes provider state and model selection to an explicit agent", async () => {
@@ -3396,7 +3372,7 @@ describe("capability cli", () => {
       ] as const)("rejects %s before provider dispatch", async (_name, argv) => {
         await expect(runCap(command, ...argv, "--timeout-ms", raw)).rejects.toThrow("exit 1");
 
-        expectRuntimeErrorContains("Invalid --timeout. Use a positive millisecond value");
+        expectRuntimeErrorContains("Invalid --timeout-ms. Use a positive millisecond value");
         expect(mocks.resolveCommandConfigWithSecrets).not.toHaveBeenCalled();
         expect(mocks.generateImage).not.toHaveBeenCalled();
         expect(mocks.generateVideo).not.toHaveBeenCalled();
@@ -4351,7 +4327,7 @@ describe("capability cli", () => {
 
   it("marks env-backed image providers as configured", async () => {
     vi.stubEnv("FAL_KEY", "fal-test-key");
-    mocks.getProviderEnvVars.mockReturnValueOnce(["FAL_KEY"]);
+    mocks.getProviderEnvVarsCore.mockReturnValueOnce(["FAL_KEY"]);
     mocks.listRuntimeImageGenerationProviders.mockReturnValueOnce([
       { id: "fal", label: "fal", defaultModel: "fal-ai/flux", models: [] },
     ] as never);
@@ -4366,7 +4342,7 @@ describe("capability cli", () => {
   it("marks env-backed video generation and description providers as configured", async () => {
     vi.stubEnv("RUNWAYML_API_SECRET", "runway-test-key");
     vi.stubEnv("GEMINI_API_KEY", "gemini-test-key");
-    mocks.getProviderEnvVars.mockImplementation((providerId: string) =>
+    mocks.getProviderEnvVarsCore.mockImplementation((providerId: string) =>
       providerId === "runway" ? ["RUNWAYML_API_SECRET"] : ["GEMINI_API_KEY"],
     );
     mocks.listRuntimeVideoGenerationProviders.mockReturnValueOnce([
@@ -4395,7 +4371,7 @@ describe("capability cli", () => {
 
   it("marks env-backed TTS providers as configured", async () => {
     vi.stubEnv("XAI_API_KEY", "xai-test-key");
-    mocks.getProviderEnvVars.mockReturnValueOnce(["XAI_API_KEY"]);
+    mocks.getProviderEnvVarsCore.mockReturnValueOnce(["XAI_API_KEY"]);
     mocks.listSpeechProviders.mockReturnValueOnce([
       { id: "xai", label: "xAI", models: [], voices: [] },
     ] as never);

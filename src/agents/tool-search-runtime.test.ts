@@ -28,10 +28,12 @@ import {
   compactToolSearchCatalogEntry,
 } from "./tool-search-catalog.js";
 import {
-  formatToolSearchControlError,
-  formatToolSearchControlResult,
   prepareToolSearchDispatcherArguments,
   readToolSearchCallArgs,
+} from "./tool-search-request.js";
+import {
+  formatToolSearchControlError,
+  formatToolSearchControlResult,
   ToolSearchRuntime,
 } from "./tool-search-runtime.js";
 import type { ToolSearchCatalogEntry } from "./tool-search-types.js";
@@ -538,6 +540,62 @@ describe("Tool Search terminal results", () => {
 });
 
 describe("Tool Search input schemas", () => {
+  it("runs prepareArguments before catalog input validation", async () => {
+    const target = fakeTool(
+      "alias_search",
+      Type.Object(
+        {
+          query: Type.String(),
+          minScore: Type.Optional(Type.Number()),
+          maxResults: Type.Optional(Type.Integer({ minimum: 1 })),
+        },
+        { additionalProperties: false },
+      ),
+    );
+    target.prepareArguments = (args: unknown) => {
+      const params = { ...(args as Record<string, unknown>) };
+      if (Object.hasOwn(params, "min_score") && !Object.hasOwn(params, "minScore")) {
+        params.minScore = params.min_score;
+        delete params.min_score;
+      }
+      if (Object.hasOwn(params, "max_results") && !Object.hasOwn(params, "maxResults")) {
+        params.maxResults = params.max_results;
+        delete params.max_results;
+      }
+      return params;
+    };
+    const { runtime } = createRuntime([target]);
+
+    await expect(
+      runtime.call("alias_search", { query: "orchid", min_score: 0.01, max_results: 3 }),
+    ).resolves.toMatchObject({
+      result: { details: { input: { query: "orchid", minScore: 0.01, maxResults: 3 } } },
+    });
+    expect(target.execute).toHaveBeenCalledOnce();
+    expect(vi.mocked(target.execute).mock.calls[0]?.[1]).toEqual({
+      query: "orchid",
+      minScore: 0.01,
+      maxResults: 3,
+    });
+  });
+
+  it("still rejects unrecognized aliases after prepareArguments", async () => {
+    const target = fakeTool(
+      "alias_search",
+      Type.Object(
+        { query: Type.String(), minScore: Type.Optional(Type.Number()) },
+        { additionalProperties: false },
+      ),
+    );
+    target.prepareArguments = (args: unknown) => args;
+    const { runtime } = createRuntime([target]);
+
+    await expect(
+      runtime.call("alias_search", { query: "orchid", min_score: 0.01 }),
+    ).rejects.toThrow("min_score");
+    expect(target.execute).not.toHaveBeenCalled();
+  });
+
   it("validates arguments after a policy hook repairs them", async () => {
     const hook = vi.fn(async () => ({ params: { instruction: "repaired" } }));
     initializeGlobalHookRunner(
@@ -957,7 +1015,7 @@ describe("Tool Search network error boundaries", () => {
       const text = result.content[0]?.type === "text" ? result.content[0].text : "";
 
       expect(text.length).toBeLessThan(21_000);
-      expect(text).toContain("SECURITY NOTICE:");
+      expect(text).toMatch(/<<<EXTERNAL_UNTRUSTED_CONTENT id="[a-f0-9]{16}">>>/);
       expect(text).toContain("[truncated]");
       expect(text).not.toContain("<|im_start|>");
       expect(text.indexOf("[truncated]")).toBeLessThan(
@@ -988,7 +1046,7 @@ describe("Tool Search network error boundaries", () => {
     const text = result.content[0]?.type === "text" ? result.content[0].text : "";
 
     expect(text.length).toBeLessThan(21_000);
-    expect(text).toContain("SECURITY NOTICE:");
+    expect(text).toMatch(/<<<EXTERNAL_UNTRUSTED_CONTENT id="[a-f0-9]{16}">>>/);
     expect(text).toContain("[truncated]");
     expect(text).not.toContain("<s>");
     expect(result.details).toBe(payload);

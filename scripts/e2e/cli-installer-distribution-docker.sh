@@ -47,7 +47,7 @@ bash /tmp/openclaw-source/scripts/install-cli.sh \
   --version "$OPENCLAW_SOURCE_SHA" \
   --no-git-update \
   --prefix /tmp/openclaw-prefix \
-  --node-version 24.19.0 \
+  --node-version 24.21.0 \
   --no-onboard
 
 prefix_node=/tmp/openclaw-prefix/tools/node/bin/node
@@ -134,6 +134,7 @@ docker_e2e_docker_run_cmd run -d \
   "$IMAGE_NAME" \
   bash -lc '
     set -euo pipefail
+    rm -f -- /node_modules
     apt-get update
     DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends curl
     rm -rf /var/lib/apt/lists/*
