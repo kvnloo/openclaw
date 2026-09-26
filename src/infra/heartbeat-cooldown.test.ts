@@ -302,27 +302,36 @@ describe("shouldDeferWake", () => {
       ).toEqual({ defer: false });
     });
 
-    it("counts in-window starts regardless of buffer order (clock jumps keep insertion order)", () => {
+    it("counts in-window starts from a reachable clock-step buffer (lastRun matches final start)", () => {
+      // Reachable via recordRunStart / scheduler recordRunBookkeeping: each
+      // lastRunStartedAtMs equals the timestamp just pushed. A backward wall
+      // step inserts an older stamp after newer ones; reverse-break would miss
+      // the pre-step in-window start and fail open.
+      const recentRunStarts: number[] = [];
+      let lastRunStartedAtMs = 0;
+      const record = (ts: number) => {
+        recordRunStart(recentRunStarts, ts);
+        lastRunStartedAtMs = ts;
+      };
+      record(990_000);
+      record(935_000); // post-step; out of the final 60s window
+      record(945_000);
+      record(955_000);
+      record(965_000);
+      record(969_999);
       const now = 1_000_000;
-      // A backward clock step between runs leaves a stale out-of-window stamp
-      // after newer in-window ones; five of six starts are still in-window.
+      expect(lastRunStartedAtMs).toBe(recentRunStarts[recentRunStarts.length - 1]);
+      // Redacted after-fix: flood deferral with retryAtMs past the threshold-oldest start.
       expect(
         decide({
           source: "exec-event",
           now,
           nextDueMs: 0,
-          lastRunStartedAtMs: now - 30_001,
-          recentRunStarts: [
-            now - 10_000,
-            now - 65_000,
-            now - 40_000,
-            now - 30_000,
-            now - 20_000,
-            now - 5_000,
-          ],
+          lastRunStartedAtMs,
+          recentRunStarts,
           reason: "exec-event",
         }),
-      ).toEqual({ defer: true, reason: "flood", retryAtMs: 1_020_001 });
+      ).toEqual({ defer: true, reason: "flood", retryAtMs: 1_005_001 });
     });
   });
 });
