@@ -150,24 +150,116 @@ describe("managed Completions cache markers", () => {
   });
 
   it.each([
-    ["openrouter", "", 3, true],
-    ["custom", "https://openrouter.ai/api/v1", 3, true],
-    ["deepinfra", "https://api.deepinfra.com/v1/openai", 3, false],
-    ["dashscope", "", 2, false],
-    ["custom", "https://dashscope.aliyuncs.com/compatible-mode/v1", 2, false],
-    ["openrouter", "https://proxy.example/v1", 0, false],
-    ["custom", "https://proxy.example/v1", 0, false],
-  ])("honors retention and route contracts for %s at %s", (provider, baseUrl, count, longTtl) => {
-    const route = { ...model, provider, baseUrl };
-    for (const cacheRetention of [undefined, "short", "long", "none"] as const) {
-      const payload = buildOpenAICompletionsParams(route, context, { cacheRetention });
-      expect(markers(payload)).toHaveLength(cacheRetention === "none" ? 0 : count);
-      expect(JSON.stringify(payload).includes('"ttl":"1h"')).toBe(
-        longTtl && cacheRetention === "long",
-      );
-      expect(JSON.stringify(payload)).not.toContain(
-        JSON.stringify(SYSTEM_PROMPT_CACHE_BOUNDARY).slice(1, -1),
-      );
-    }
+    { provider: "openrouter", baseUrl: "", count: 3, longTtl: true },
+    { provider: "custom", baseUrl: "https://openrouter.ai/api/v1", count: 3, longTtl: true },
+    {
+      provider: "deepinfra",
+      baseUrl: "https://api.deepinfra.com/v1/openai",
+      count: 3,
+      longTtl: false,
+    },
+    { provider: "dashscope", baseUrl: "", count: 2, longTtl: false },
+    {
+      provider: "custom",
+      baseUrl: "https://dashscope.aliyuncs.com/compatible-mode/v1",
+      count: 2,
+      longTtl: false,
+    },
+    { provider: "openrouter", baseUrl: "https://proxy.example/v1", count: 0, longTtl: false },
+    { provider: "custom", baseUrl: "https://proxy.example/v1", count: 0, longTtl: false },
+  ])(
+    "honors retention and route contracts for $provider at $baseUrl",
+    ({ provider, baseUrl, count, longTtl }) => {
+      const route = { ...model, provider, baseUrl };
+      for (const cacheRetention of [undefined, "short", "long", "none"] as const) {
+        const payload = buildOpenAICompletionsParams(route, context, { cacheRetention });
+        expect(markers(payload)).toHaveLength(cacheRetention === "none" ? 0 : count);
+        expect(JSON.stringify(payload).includes('"ttl":"1h"')).toBe(
+          longTtl && cacheRetention === "long",
+        );
+        expect(JSON.stringify(payload)).not.toContain(
+          JSON.stringify(SYSTEM_PROMPT_CACHE_BOUNDARY).slice(1, -1),
+        );
+      }
+    },
+  );
+
+  it("keeps runtime-context cache exclusions after flattening no-tools tool history", () => {
+    const payload = buildOpenAICompletionsParams(
+      {
+        ...model,
+        compat: {
+          supportsTools: false,
+          cacheControlFormat: "anthropic",
+        },
+      } as typeof model,
+      {
+        ...context,
+        messages: [
+          ...context.messages,
+          {
+            role: "assistant",
+            api: model.api,
+            provider: model.provider,
+            model: model.id,
+            content: [
+              {
+                type: "toolCall",
+                id: "call_notes",
+                name: "read",
+                arguments: { path: "notes.txt" },
+              },
+              {
+                type: "toolCall",
+                id: "call_readme",
+                name: "read",
+                arguments: { path: "readme.md" },
+              },
+            ],
+            usage: {
+              input: 1,
+              output: 1,
+              cacheRead: 0,
+              cacheWrite: 0,
+              totalTokens: 2,
+              cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+            },
+            stopReason: "toolUse",
+            timestamp: 2,
+          },
+          {
+            role: "toolResult",
+            toolCallId: "call_notes",
+            toolName: "read",
+            isError: false,
+            content: [{ type: "text", text: "ok: notes" }],
+            timestamp: 3,
+          },
+          {
+            role: "toolResult",
+            toolCallId: "call_readme",
+            toolName: "read",
+            isError: false,
+            content: [{ type: "text", text: "ok: readme" }],
+            timestamp: 4,
+          },
+          { role: "user", content: "Next", timestamp: 5 },
+          { role: "user", content: "Runtime facts", runtimeContextCarrier: true, timestamp: 6 },
+        ],
+      },
+      undefined,
+    ) as {
+      tools?: unknown;
+      messages: Array<{ role?: string; content?: unknown }>;
+    };
+
+    expect(payload).not.toHaveProperty("tools");
+    const wire = JSON.stringify(payload.messages);
+    expect(wire).toContain(JSON.stringify(marked("Next")));
+    expect(wire).toContain('"content":"Runtime facts"');
+    expect(wire).not.toContain(JSON.stringify(marked("Runtime facts")));
+    expect(wire).toContain("[tool call id=call_notes name=read]");
+    expect(wire).toContain("notes.txt");
+    expect(wire).toContain("readme.md");
   });
 });
