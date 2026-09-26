@@ -13,6 +13,12 @@ import type { readActiveOpenClawAgentDatabaseLeasesReadOnly } from "../state/ope
 import { beginDoctorMaintenance } from "./doctor-maintenance.js";
 
 const boundary = vi.hoisted(() => ({
+  readConfig: vi.fn(async () => ({
+    valid: true,
+    config: {},
+    path: "/synthetic/doctor-state/openclaw.json",
+    issues: [],
+  })),
   external: vi.fn(),
   readLeases: vi.fn<typeof readActiveOpenClawAgentDatabaseLeasesReadOnly>(),
   gatewayAcquire: vi.fn(),
@@ -59,7 +65,7 @@ vi.mock("../config/paths.js", async (importOriginal) => ({
   isDefaultInstallIdentity: () => true,
 }));
 vi.mock("../config/config.js", () => ({
-  readConfigFileSnapshot: async () => ({ config: {} }),
+  readConfigFileSnapshot: boundary.readConfig,
 }));
 vi.mock("./doctor-service-repair-policy.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("./doctor-service-repair-policy.js")>()),
@@ -166,6 +172,12 @@ const root = "/synthetic/doctor-install";
 let stopped: PreManagedServiceStop;
 beforeEach(() => {
   vi.resetAllMocks();
+  boundary.readConfig.mockResolvedValue({
+    valid: true,
+    config: {},
+    path: "/synthetic/doctor-state/openclaw.json",
+    issues: [],
+  });
   boundary.external.mockReturnValue(false);
   boundary.readLeases.mockReturnValue([]);
   boundary.schemas.mockResolvedValue({ indeterminate: [] });

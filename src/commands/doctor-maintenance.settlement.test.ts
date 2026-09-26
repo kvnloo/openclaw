@@ -501,3 +501,70 @@ it("reports an already stopped Gateway without starting it after repair", async 
   expect(maintenance!.warnings).toContainEqual(warning);
   expect(boundary.log).toHaveBeenCalledWith(warning);
 });
+
+it("does not restore Gateway when exceptional recovery reads invalid saved config", async () => {
+  // Malformed JSON5 / schema-invalid snapshots report valid:false with config:{}.
+  boundary.readConfig.mockResolvedValue({
+    valid: false,
+    config: {},
+    path: "/synthetic/doctor-state/openclaw.json",
+    raw: "{ gateway: { mode: 'local', ",
+    parsed: null,
+    issues: [{ path: "", message: "JSON5 parse error" }],
+  });
+  const maintenance = await begin();
+  // No outer failure: recovery refusal must surface directly (not AggregateError).
+  const refusal = await maintenance!.finish(undefined).catch((error: unknown) => error);
+  expect(refusal).toBeInstanceOf(DoctorMaintenanceRefusalError);
+  expect(String(refusal)).toMatch(/persisted repair state is not ready/);
+  expect(String(refusal)).toMatch(/Doctor recovery config is invalid/);
+  expect(boundary.restart).not.toHaveBeenCalled();
+  expect(boundary.health).not.toHaveBeenCalled();
+  expect(boundary.repair).not.toHaveBeenCalled();
+  expect(boundary.resume).not.toHaveBeenCalled();
+  // Recovery throw retains the stopped install via exit.release(failed); the
+  // maintenance scope close runs on the release/compensation path instead.
+});
+
+it("still restores Gateway when exceptional recovery reads a valid saved config", async () => {
+  boundary.readConfig.mockResolvedValue({
+    valid: true,
+    config: { gateway: { mode: "local" } },
+    path: "/synthetic/doctor-state/openclaw.json",
+    issues: [],
+  });
+  const maintenance = await begin();
+  await maintenance!.finish(
+    undefined,
+    undefined,
+    new Error("diagnostic failed after repair write"),
+  );
+  expect(boundary.restart).toHaveBeenCalledOnce();
+  expect(boundary.health).toHaveBeenCalledOnce();
+  expect(boundary.resume).toHaveBeenCalledOnce();
+  expect(boundary.close).toHaveBeenCalledOnce();
+});
+
+it("mutation: removing recovery valid check would restart Gateway on invalid saved config", async () => {
+  const source = await import("node:fs/promises").then((fs) =>
+    fs.readFile(new URL("./doctor-maintenance-inspection.ts", import.meta.url), "utf8"),
+  );
+  expect(source).toMatch(/if\s*\(\s*!snapshot\.valid\s*\)/);
+  expect(source.indexOf("if (!snapshot.valid)")).toBeLessThan(
+    source.indexOf("assertDoctorMaintenanceReady(snapshot.config"),
+  );
+
+  boundary.readConfig.mockResolvedValue({
+    valid: false,
+    config: {},
+    path: "/synthetic/doctor-state/openclaw.json",
+    raw: "{ gateway: { mode: 'local', ",
+    issues: [{ path: "", message: "JSON5 parse error" }],
+  });
+  const maintenance = await begin();
+  await expect(maintenance!.finish(undefined)).rejects.toBeInstanceOf(
+    DoctorMaintenanceRefusalError,
+  );
+  expect(boundary.restart).not.toHaveBeenCalled();
+  expect(boundary.health).not.toHaveBeenCalled();
+});

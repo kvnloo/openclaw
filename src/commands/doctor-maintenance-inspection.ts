@@ -96,12 +96,20 @@ export async function readDoctorMaintenanceRecoveryConfig(
 ): Promise<OpenClawConfig> {
   const { readConfigFileSnapshot } = await import("../config/config.js");
   return resources.run(async () => {
-    const { config } = await readConfigFileSnapshot({
+    const snapshot = await readConfigFileSnapshot({
       skipPluginValidation: true,
       observe: false,
     });
-    await assertDoctorMaintenanceReady(config, env, log);
-    return config;
+    // Malformed JSON5 and other invalid snapshots can still yield config: {}.
+    // Fail closed before readiness/restore so exceptional finish never restarts
+    // the Gateway on an unvalidated recovery snapshot.
+    if (!snapshot.valid) {
+      throw new Error(
+        `Doctor recovery config is invalid at ${snapshot.path}. Run \`openclaw doctor --fix\` to apply supported repairs before restoring the Gateway.`,
+      );
+    }
+    await assertDoctorMaintenanceReady(snapshot.config, env, log);
+    return snapshot.config;
   });
 }
 
