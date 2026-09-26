@@ -64,6 +64,7 @@ describe("readDoctorMaintenanceRecoveryConfig", () => {
     expect(refusal).toBeInstanceOf(DoctorMaintenanceRefusalError);
     const typed = refusal as DoctorMaintenanceRefusalError;
     expect(typed.refusal.kind).toBe("data-at-risk");
+    expect(typed.refusal.reason).toBe("unreadable-state");
     expect(typed.message).toContain("Gateway stays stopped");
   });
 
