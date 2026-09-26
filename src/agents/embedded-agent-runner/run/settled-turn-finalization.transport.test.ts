@@ -285,6 +285,20 @@ it.each(["HTTP", "WebSocket", "terminated"])("finalizes after %s failure", async
       terminal: { kind: "ok" },
       settledTurnFinalizationContext: { source: "openclaw-transcript" },
     });
+    // External source sends retain target receipts, not internal-UI mirror payloads.
+    // A progress receipt must not suppress the later tool-free recovered answer.
+    attempt.didSendViaMessagingTool = true;
+    attempt.didDeliverSourceReplyViaMessageTool = true;
+    attempt.messagingToolSentTexts = ["Saving the note."];
+    attempt.messagingToolSentTargets = [
+      {
+        tool: "message",
+        provider: "telegram",
+        to: "synthetic-source",
+        text: "Saving the note.",
+        sourceReplyFinal: false,
+      },
+    ];
     const input = createSettledFinalizationTestInput(attempt, await admission.admit("embedded"));
     input.terminalBase.runParams.trigger = "user";
     input.terminalBase.runParams.config = {};
