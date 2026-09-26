@@ -386,6 +386,7 @@ export async function runConfigOperations(params: {
       pathTokens: operation.pathTokens,
       quotedNumericSegments: operation.quotedNumericSegments,
       schema: mutationSchema,
+      command: params.successMode,
     };
     if (merge) {
       mergeAtPath(next, operation.setPath, operation.value, pathOptions);
@@ -395,6 +396,7 @@ export async function runConfigOperations(params: {
         path: operation.setPath,
         value: operation.value,
         allowReplace: options.replace || operation.mutation === "replace",
+        command: params.successMode,
       });
       setAtPath(next, operation.setPath, operation.value, pathOptions);
     }
