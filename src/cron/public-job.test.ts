@@ -16,6 +16,7 @@ describe("toPublicCronJob", () => {
         runningScheduleChangeId: "pending-run-edit",
         failureAlertIncident: { signature: "internal-incident", scope: "run" },
         lastFailureNotificationId: "internal-notification",
+        scheduleErrorCount: 2,
       },
     });
 
@@ -29,6 +30,7 @@ describe("toPublicCronJob", () => {
     expect(publicJob.state).not.toHaveProperty("runningScheduleChangeId");
     expect(publicJob.state).not.toHaveProperty("failureAlertIncident");
     expect(publicJob.state).not.toHaveProperty("lastFailureNotificationId");
+    expect(publicJob.state).not.toHaveProperty("scheduleErrorCount");
     expect(job.state.queuedAtMs).toBe(1_900);
     expect(job.state.runningReceiptId).toBe("pending-receipt");
     expect(job.state.startupCatchupAtMs).toBe(2_000);
@@ -40,6 +42,7 @@ describe("toPublicCronJob", () => {
       scope: "run",
     });
     expect(job.state.lastFailureNotificationId).toBe("internal-notification");
+    expect(job.state.scheduleErrorCount).toBe(2);
   });
 
   it("projects script payload fields without exposing scheduler-only state", () => {
