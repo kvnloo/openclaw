@@ -507,7 +507,17 @@ export class ToolSearchRuntime {
   ) => {
     this.pluginRuntimeRefresh.assertCurrent();
     catalog.callCount += 1;
-    const normalizedInput = input ?? {};
+    // Match the direct harness/agent-loop path: run prepareArguments before
+    // catalog input validation so snake_case aliases (e.g. memory_search
+    // min_score/max_results) are accepted on tool_call. #158631
+    const rawInput = input ?? {};
+    const prepareArguments =
+      entry.source === "openclaw" &&
+      "prepareArguments" in entry.tool &&
+      typeof entry.tool.prepareArguments === "function"
+        ? entry.tool.prepareArguments.bind(entry.tool)
+        : undefined;
+    const normalizedInput = prepareArguments ? prepareArguments(rawInput) : rawInput;
     const parentId = sanitizeToolCallIdPart(options?.parentToolCallId ?? "direct");
     const toolCallId = `tool_search_code:${parentId}:${entry.name}:${++this.callSequence}`;
     bindJoinedCollectorInvocation(entry.tool, toolCallId);
