@@ -39,6 +39,10 @@ import type { GatewayWsClient } from "../server/ws-types.js";
 import { createBoardHarness as createHarness } from "./board.test-support.js";
 import { sessionMutationHandlers } from "./sessions-mutations.js";
 import type { GatewayRequestContext, RespondFn } from "./types.js";
+import { upsertSessionEntryCore } from "../../config/sessions/session-accessor.js";
+import { ensureProfileForEmail } from "../../state/user-profiles.js";
+import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
+import { roleClient, rolePolicyConfig } from "../session-sharing.test-utils.js";
 
 const reviewWidgetApproval = vi.hoisted(() => vi.fn());
 const sessionList = vi.hoisted(() => vi.fn());
@@ -755,5 +759,69 @@ describe("board gateway runtime boundaries", () => {
     tool = createTool();
     const reopened = (await tool.execute("reopen", { action: "read" })).details as BoardSnapshot;
     expect(reopened.widgets).toEqual(read.widgets);
+  });
+
+  async function setupVisibilityHarness() {
+    const ownerProfile = ensureProfileForEmail("board-owner@example.com");
+    const viewer = roleClient("none", "board-viewer");
+    const viewerProfile = ensureProfileForEmail("board-viewer@example.test");
+    await upsertSessionEntryCore(
+      { agentId: "main", sessionKey: "agent:main:foreign-board" },
+      {
+        sessionId: "session-foreign-board",
+        updatedAt: 1,
+        createdActor: { type: "human", source: "profile", id: ownerProfile.id },
+        visibility: "shared",
+      },
+    );
+    const cfg = {
+      ...rolePolicyConfig(),
+      agents: { list: [{ id: "main", default: true }] },
+    };
+    const harness = createHarness(undefined, {}, undefined, {
+      getRuntimeConfig: () => cfg,
+    }, viewer);
+    return { harness, viewerProfile };
+  }
+
+  it("denies board.get for sessions the caller's role cannot see", async () => {
+    await withOpenClawTestState({ scenario: "minimal" }, async () => {
+      const { harness, viewerProfile } = await setupVisibilityHarness();
+      const denied = await harness.invoke("board.get", { sessionKey: "foreign-board" });
+      expect(denied.mock.calls[0]?.[0]).toBe(false);
+      expect(denied.mock.calls[0]?.[2]).toMatchObject({
+        message: "no session found for board query",
+      });
+
+      // The same caller can still read a session they own.
+      const ownKey = "agent:main:own-board";
+      await upsertSessionEntryCore(
+        { agentId: "main", sessionKey: ownKey },
+        {
+          sessionId: "session-own-board",
+          updatedAt: 1,
+          createdActor: { type: "human", source: "profile", id: viewerProfile.id },
+          visibility: "shared",
+        },
+      );
+      const allowed = await harness.invoke("board.get", { sessionKey: "own-board" });
+      expect(allowed.mock.calls[0]?.[0]).toBe(true);
+    });
+  });
+
+  it("denies board.widget.appView for sessions the caller's role cannot see", async () => {
+    await withOpenClawTestState({ scenario: "minimal" }, async () => {
+      const { harness } = await setupVisibilityHarness();
+      const denied = await harness.invoke("board.widget.appView", {
+        sessionKey: "foreign-board",
+        name: "widget",
+        revision: 1,
+        instanceId: "instance-1",
+      });
+      expect(denied.mock.calls[0]?.[0]).toBe(false);
+      expect(denied.mock.calls[0]?.[2]).toMatchObject({
+        message: "no session found for board query",
+      });
+    });
   });
 });

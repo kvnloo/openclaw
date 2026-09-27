@@ -1,4 +1,6 @@
 import {
+  ErrorCodes,
+  errorShape,
   type BoardSnapshot,
   type BoardWidgetMaterializedPutParams,
   validateBoardActionParams,
@@ -56,8 +58,13 @@ import { sessionObserverScopeKey } from "../session-observer-model.js";
 import { resolveRequestedSessionAgentId } from "../session-request-agent.js";
 import { resolveSessionStoreKey } from "../session-store-key.js";
 import { emitSessionsChanged } from "./session-change-event.js";
-import type { GatewayRequestHandlers } from "./types.js";
+import type { GatewayClient, GatewayRequestHandlers } from "./types.js";
 import { assertValidParams, defineValidatedGatewayMethod } from "./validation.js";
+import {
+  authorizeIncognitoSessionTarget,
+  createSessionListEntryFilter,
+  resolveSessionSharingTarget,
+} from "../session-sharing.js";
 
 type CanvasDocumentReader = typeof readCanvasDocumentHtmlSource;
 type McpAppDependencies = {
@@ -86,6 +93,53 @@ function resolveBoardSession(
   return { sessionKey: canonicalKey, agentId: requested.agentId };
 }
 
+/**
+ * Visibility-fenced board session resolution for caller-supplied read targets.
+ *
+ * `board.get` and `board.widget.appView` take a caller-supplied sessionKey but
+ * are absent from the session-mutation policy, so unlike the write methods they
+ * need the same session visibility filter the other session-scoped read
+ * surfaces (artifacts, chat history) apply. Denials report not_found so callers
+ * cannot probe session existence.
+ */
+function resolveVisibleBoardSession(
+  params: { sessionKey: string; agentId?: string | undefined },
+  context: Parameters<GatewayRequestHandlers[string]>[0]["context"],
+  respond: Parameters<GatewayRequestHandlers[string]>[0]["respond"],
+  client: GatewayClient | null,
+): Required<BoardSessionTarget> | undefined {
+  const boardSession = resolveBoardSession(params, context, respond);
+  if (!boardSession) {
+    return undefined;
+  }
+  const cfg = context.getRuntimeConfig();
+  const target = resolveSessionSharingTarget({
+    cfg: cfg ?? {},
+    sessionKey: boardSession.sessionKey,
+    agentId: boardSession.agentId,
+  });
+  const incognitoError = authorizeIncognitoSessionTarget({
+    client,
+    sessionKey: params.sessionKey,
+    target,
+  });
+  const visibilityDenied = Boolean(
+    target &&
+      createSessionListEntryFilter({ client, cfg })?.(target.storeKey, target.entry) === false,
+  );
+  if (!incognitoError && !visibilityDenied) {
+    return boardSession;
+  }
+  respond(
+    false,
+    undefined,
+    errorShape(ErrorCodes.INVALID_REQUEST, "no session found for board query", {
+      details: { type: "board_scope_not_found" },
+    }),
+  );
+  return undefined;
+}
+
 function projectBoardSnapshot<T extends BoardSnapshot>(snapshot: T, agentId: string): T {
   // Observer identities distinguish global boards on the wire, never in stored rows.
   return { ...snapshot, sessionKey: sessionObserverScopeKey(snapshot.sessionKey, agentId) };
@@ -109,7 +163,7 @@ export function createBoardHandlers(
         const { params: boardParams, respond, context, client } = invocation;
         try {
           const authority = captureBoardRequestAuthority(invocation);
-          const boardSession = resolveBoardSession(boardParams, context, respond);
+          const boardSession = resolveVisibleBoardSession(boardParams, context, respond, client);
           if (!boardSession) {
             return;
           }
@@ -513,10 +567,10 @@ export function createBoardHandlers(
       "board.widget.appView",
       validateBoardWidgetAppViewParams,
       async (invocation) => {
-        const { params: boardParams, respond, context } = invocation;
+        const { params: boardParams, respond, context, client } = invocation;
         try {
           const authority = captureBoardRequestAuthority(invocation);
-          const boardSession = resolveBoardSession(boardParams, context, respond);
+          const boardSession = resolveVisibleBoardSession(boardParams, context, respond, client);
           if (!boardSession) {
             return;
           }
