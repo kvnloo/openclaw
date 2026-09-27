@@ -4,6 +4,8 @@ import {
   setConfiguredMcpServer,
   unsetConfiguredMcpServer,
 } from "../../agents/mcp-config-mutation.js";
+import { normalizeChatChannelId } from "../../channels/ids.js";
+import { resolveConfigWriteTargetFromPath } from "../../channels/plugins/config-writes.js";
 import { listConfiguredMcpServers } from "../../config/mcp-config.js";
 import { redactSensitiveArgv } from "../../config/redact-argv.js";
 import { REDACTED_SENTINEL, redactConfigObject } from "../../config/redact-snapshot.js";
@@ -22,6 +24,8 @@ import {
 } from "./commands-private-route.js";
 import type { CommandHandler, HandleCommandsParams } from "./commands-types.js";
 import { parseMcpCommand } from "./mcp-commands.js";
+import { resolveChannelAccountId } from "./channel-context.js";
+import { resolveConfigWriteDeniedText } from "./config-write-authorization.js";
 
 const MCP_SHOW_PRIVATE_ROUTE_UNAVAILABLE =
   "I couldn't find a private owner route for MCP configuration. Run /mcp show from an owner DM so sensitive server details are not posted in this chat.";
@@ -156,6 +160,22 @@ export const handleMcpCommand: CommandHandler = defineAuthorizedTextCommand(
     });
     if (missingAdminScope) {
       return missingAdminScope;
+    }
+
+    const configWriteDenial = resolveConfigWriteDeniedText({
+      cfg: params.cfg,
+      channel: params.command.channel,
+      originChannelId: params.command.channelId ?? normalizeChatChannelId(params.command.channel),
+      originAccountId: resolveChannelAccountId({
+        cfg: params.cfg,
+        ctx: params.ctx,
+        command: params.command,
+      }),
+      gatewayClientScopes: params.ctx.GatewayClientScopes,
+      target: resolveConfigWriteTargetFromPath(["mcp"]),
+    });
+    if (configWriteDenial) {
+      return commandReply(configWriteDenial);
     }
 
     if (mcpCommand.action === "set") {

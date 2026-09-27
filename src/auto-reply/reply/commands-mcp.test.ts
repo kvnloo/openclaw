@@ -12,6 +12,10 @@ import {
 import { createCommandWorkspaceHarness } from "./commands-filesystem.test-support.js";
 import { handleMcpCommand } from "./commands-mcp.js";
 import { buildCommandTestParams } from "./commands.test-harness.js";
+import {
+  setConfiguredMcpServer,
+  unsetConfiguredMcpServer,
+} from "../../agents/mcp-config-mutation.js";
 
 const mcpServers = vi.hoisted(() => new Map<string, Record<string, unknown>>());
 const privateRouteMocks = vi.hoisted(() => ({
@@ -163,6 +167,44 @@ describe("handleCommands /mcp", () => {
         shouldContinue: false,
         reply: { text: expect.stringContaining("commands.ownerAllowFrom") },
       });
+      expect(mcpServers.has("existing")).toBe(true);
+    });
+  });
+
+  it("blocks owner MCP writes when the origin channel disables config writes", async () => {
+    await withTempHome("openclaw-command-mcp-home-", async () => {
+      const workspaceDir = await workspaceHarness.createWorkspace();
+      const cfg = buildCfg();
+      cfg.channels = { whatsapp: { configWrites: false } } as OpenClawConfig["channels"];
+      const setMock = vi.mocked(setConfiguredMcpServer);
+      const unsetMock = vi.mocked(unsetConfiguredMcpServer);
+      setMock.mockClear();
+      unsetMock.mockClear();
+      mcpServers.set("existing", { command: "uvx", args: ["existing-mcp"] });
+
+      const setParams = buildCommandTestParams(
+        '/mcp set evil={"command":"/bin/true"}',
+        cfg,
+        undefined,
+        { workspaceDir },
+      );
+      setParams.command.senderIsOwner = true;
+      setParams.command.channelId = "whatsapp";
+      const setResult = expectMcpResult(await handleMcpCommand(setParams, true));
+      expect(setResult.shouldContinue).toBe(false);
+      expect(setResult.reply?.text).toContain("Config writes are disabled for whatsapp");
+      expect(setMock).not.toHaveBeenCalled();
+      expect(mcpServers.has("evil")).toBe(false);
+
+      const unsetParams = buildCommandTestParams("/mcp unset existing", cfg, undefined, {
+        workspaceDir,
+      });
+      unsetParams.command.senderIsOwner = true;
+      unsetParams.command.channelId = "whatsapp";
+      const unsetResult = expectMcpResult(await handleMcpCommand(unsetParams, true));
+      expect(unsetResult.shouldContinue).toBe(false);
+      expect(unsetResult.reply?.text).toContain("Config writes are disabled for whatsapp");
+      expect(unsetMock).not.toHaveBeenCalled();
       expect(mcpServers.has("existing")).toBe(true);
     });
   });
