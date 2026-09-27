@@ -1,6 +1,8 @@
 // Implements plugin command listing and configuration helpers.
 import { normalizeOptionalLowercaseString } from "@openclaw/normalization-core/string-coerce";
+import { normalizeChatChannelId } from "../../channels/ids.js";
 import { readChannelContextGatewayContextResolver } from "../../channels/message-access/admission-evidence.js";
+import { resolveConfigWriteTargetFromPath } from "../../channels/plugins/config-writes.js";
 import { resolvePluginCapabilityConsentCliOptions } from "../../cli/plugin-capability-consent.js";
 import { assertConfigWriteAllowedInCurrentMode } from "../../config/config-write-guard.js";
 import { readConfigFileSnapshot, readConfigFileSnapshotForWrite } from "../../config/config.js";
@@ -31,12 +33,14 @@ import {
   requireCommandFlagEnabled,
   requireGatewayClientScope,
 } from "./command-gates.js";
+import { resolveChannelAccountId, resolveCommandSurfaceChannel } from "./channel-context.js";
 import {
   formatPluginCommandCapabilityConsentError,
   installPluginFromPluginsCommand,
 } from "./commands-plugins-install.js";
 import type { CommandHandler } from "./commands-types.js";
 import { AutoReplyConfigMutationError, setPluginEnabledFromCommand } from "./config-mutations.js";
+import { resolveConfigWriteDeniedText } from "./config-write-authorization.js";
 import { parsePluginsCommand } from "./plugins-commands.js";
 
 function renderJsonBlock(label: string, value: unknown): string {
@@ -185,6 +189,22 @@ export const handlePluginsCommand: CommandHandler = defineAuthorizedTextCommand(
         if (nonOwner) {
           return nonOwner;
         }
+      }
+      const configWriteDenial = resolveConfigWriteDeniedText({
+        cfg: params.cfg,
+        channel: params.command.channel,
+        originChannelId:
+          params.command.channelId ?? normalizeChatChannelId(resolveCommandSurfaceChannel(params)),
+        originAccountId: resolveChannelAccountId({
+          cfg: params.cfg,
+          ctx: params.ctx,
+          command: params.command,
+        }),
+        gatewayClientScopes: params.ctx.GatewayClientScopes,
+        target: resolveConfigWriteTargetFromPath(["plugins"]),
+      });
+      if (configWriteDenial) {
+        return commandReply(configWriteDenial);
       }
       const nixModeWrite = rejectNixModePluginWrite();
       if (nixModeWrite) {

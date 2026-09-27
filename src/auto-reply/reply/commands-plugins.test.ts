@@ -521,6 +521,23 @@ describe("handlePluginsCommand", () => {
     expect(refreshPluginRegistryAfterConfigMutationMock).not.toHaveBeenCalled();
   });
 
+  it("blocks owner plugin toggles when the origin channel disables config writes", async () => {
+    const cfg = buildCfg();
+    cfg.channels = { whatsapp: { configWrites: false } } as OpenClawConfig["channels"];
+    const params = buildPluginsParams("/plugins enable superpowers", cfg, {
+      omitGatewayClientScopes: true,
+    });
+    params.command.senderIsOwner = true;
+
+    const result = await handlePluginsCommand(params, true);
+
+    expect(result?.shouldContinue).toBe(false);
+    expect(result?.reply?.text).toContain("Config writes are disabled for whatsapp");
+    expect(readConfigFileSnapshotMock).not.toHaveBeenCalled();
+    expect(replaceConfigFileMock).not.toHaveBeenCalled();
+    expect(refreshPluginRegistryAfterConfigMutationMock).not.toHaveBeenCalled();
+  });
+
   it("allows gateway clients with operator.admin to toggle plugins", async () => {
     validateConfigObjectWithPluginsMock.mockImplementation((next) => ({ ok: true, config: next }));
     const params = buildPluginsParams("/plugins disable superpowers", buildCfg(), {
