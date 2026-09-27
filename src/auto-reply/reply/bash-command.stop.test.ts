@@ -84,6 +84,7 @@ function buildRunningSession(overrides?: Record<string, unknown>) {
   return {
     id: "session-1",
     scopeKey: "chat:bash",
+    sessionKey: "session-key",
     backgrounded: true,
     pid: 4242,
     exited: false,
@@ -139,6 +140,7 @@ describe("handleBashChatCommand", () => {
     getFinishedSessionMock.mockReturnValue({
       id: "finished-status",
       scopeKey: "chat:bash",
+      sessionKey: "session-key",
       terminalStatus: "failed",
       aggregated: "retained diagnostic",
       notifyOnExitRemoval: enqueueSystemEventWithReceipt("retained diagnostic", eventOptions, {
@@ -234,6 +236,7 @@ describe("handleBashChatCommand", () => {
     getFinishedSessionMock.mockReturnValue({
       id: "session-first",
       scopeKey: "chat:bash",
+      sessionKey: "session-key",
       terminalStatus: "failed",
     });
     const restarted = await handleBashChatCommand(buildParams("/bash second"));

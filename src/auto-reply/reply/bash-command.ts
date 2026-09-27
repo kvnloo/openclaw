@@ -46,7 +46,10 @@ type ActiveBashJob =
       command: string;
     };
 
-let activeJob: ActiveBashJob | null = null;
+/** One tracked chat-bash job per issuing session. A process-global singleton let
+ * one session block another session's `!`/`/bash` run and let a bare `!stop`
+ * kill a different session's job. */
+const activeJobs = new Map<string, ActiveBashJob>();
 
 function resolveForegroundMs(cfg: OpenClawConfig): number {
   const raw = cfg.commands?.bashForegroundMs;
@@ -123,35 +126,48 @@ function resolveRawCommandBody(params: {
     : stripped;
 }
 
-function getScopedSession(sessionId: string) {
+function isOwnedChatBashSession(
+  session: { scopeKey?: string; sessionKey?: string } | undefined,
+  sessionKey: string,
+): boolean {
+  // Registry records always carry the issuing sessionKey for chat-bash runs;
+  // a session must only see and manage its own jobs.
+  return !!session && session.scopeKey === CHAT_BASH_SCOPE_KEY && session.sessionKey === sessionKey;
+}
+
+function getScopedSession(sessionId: string, sessionKey: string) {
   const running = getSession(sessionId);
-  if (running && running.scopeKey === CHAT_BASH_SCOPE_KEY) {
+  if (isOwnedChatBashSession(running, sessionKey)) {
     return { running };
   }
   const finished = getFinishedSession(sessionId);
-  if (finished && finished.scopeKey === CHAT_BASH_SCOPE_KEY) {
+  if (isOwnedChatBashSession(finished, sessionKey)) {
     return { finished };
   }
   return {};
 }
 
-function ensureActiveJobState() {
+function ensureActiveJobState(sessionKey: string) {
+  const activeJob = activeJobs.get(sessionKey);
   if (!activeJob) {
     return null;
   }
   if (activeJob.state === "starting") {
     return activeJob;
   }
-  const { running, finished } = getScopedSession(activeJob.sessionId);
+  const { running } = getScopedSession(activeJob.sessionId, sessionKey);
   if (running) {
     return activeJob;
   }
-  if (finished) {
-    activeJob = null;
-    return null;
-  }
-  activeJob = null;
+  activeJobs.delete(sessionKey);
   return null;
+}
+
+function clearTrackedJobForSession(sessionKey: string, sessionId: string) {
+  const tracked = activeJobs.get(sessionKey);
+  if (tracked?.state === "running" && tracked.sessionId === sessionId) {
+    activeJobs.delete(sessionKey);
+  }
 }
 
 function buildUsageReply(): ReplyPayload {
@@ -226,7 +242,7 @@ export async function handleBashChatCommand(params: {
     return { text: "⚠️ Unrecognized bash request." };
   }
 
-  const liveJob = ensureActiveJobState();
+  const liveJob = ensureActiveJobState(params.sessionKey);
 
   if (request.action === "help") {
     return buildUsageReply();
@@ -239,7 +255,7 @@ export async function handleBashChatCommand(params: {
     if (!sessionId) {
       return { text: "⚙️ No active bash job." };
     }
-    const { running, finished } = getScopedSession(sessionId);
+    const { running, finished } = getScopedSession(sessionId, params.sessionKey);
     if (running) {
       const runtimeSec = Math.max(0, Math.floor((Date.now() - running.startedAt) / 1000));
       const tail = running.tail || "(no output yet)";
@@ -252,9 +268,7 @@ export async function handleBashChatCommand(params: {
       };
     }
     if (finished) {
-      if (activeJob?.state === "running" && activeJob.sessionId === sessionId) {
-        activeJob = null;
-      }
+      clearTrackedJobForSession(params.sessionKey, sessionId);
       const exitLabel = renderExecExitLabel(finished);
       const prefix = finished.terminalStatus === "completed" ? "⚙️" : "⚠️";
       return setReplyPayloadMetadata(
@@ -268,9 +282,7 @@ export async function handleBashChatCommand(params: {
         { onFinalDeliverySuccess: () => acknowledgeNotifyOnExit(finished) },
       );
     }
-    if (activeJob?.state === "running" && activeJob.sessionId === sessionId) {
-      activeJob = null;
-    }
+    clearTrackedJobForSession(params.sessionKey, sessionId);
     return {
       text: `⚙️ No bash session found for ${formatSessionSnippet(sessionId)}.`,
     };
@@ -283,11 +295,9 @@ export async function handleBashChatCommand(params: {
     if (!sessionId) {
       return { text: "⚙️ No active bash job." };
     }
-    const { running } = getScopedSession(sessionId);
+    const { running } = getScopedSession(sessionId, params.sessionKey);
     if (!running) {
-      if (activeJob?.state === "running" && activeJob.sessionId === sessionId) {
-        activeJob = null;
-      }
+      clearTrackedJobForSession(params.sessionKey, sessionId);
       return {
         text: `⚙️ No running bash job found for ${formatSessionSnippet(sessionId)}.`,
       };
@@ -321,11 +331,11 @@ export async function handleBashChatCommand(params: {
     return buildUsageReply();
   }
 
-  activeJob = {
+  activeJobs.set(params.sessionKey, {
     state: "starting",
     startedAt: Date.now(),
     command: commandText,
-  };
+  });
 
   try {
     const foregroundMs = resolveForegroundMs(params.cfg);
@@ -361,12 +371,12 @@ export async function handleBashChatCommand(params: {
 
     if (result.details?.status === "running") {
       const sessionId = result.details.sessionId;
-      activeJob = {
+      activeJobs.set(params.sessionKey, {
         state: "running",
         sessionId,
         startedAt: result.details.startedAt,
         command: commandText,
-      };
+      });
       const snippet = formatSessionSnippet(sessionId);
       logVerbose(`Started bash session ${snippet}: ${commandText}`);
       return {
@@ -375,7 +385,7 @@ export async function handleBashChatCommand(params: {
     }
 
     // Completed in foreground.
-    activeJob = null;
+    activeJobs.delete(params.sessionKey);
     const exitDetails =
       result.details?.status === "completed" || result.details?.status === "failed"
         ? result.details
@@ -393,7 +403,7 @@ export async function handleBashChatCommand(params: {
       ].join("\n"),
     };
   } catch (err) {
-    activeJob = null;
+    activeJobs.delete(params.sessionKey);
     const message = formatErrorMessage(err);
     return {
       text: [`⚠️ bash failed: ${commandText}`, formatOutputBlock(message)].join("\n"),
