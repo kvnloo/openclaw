@@ -1,4 +1,5 @@
 import { asNullableRecord } from "@openclaw/normalization-core/record-coerce";
+import { normalizeOptionalLowercaseString } from "@openclaw/normalization-core/string-coerce";
 import { sanitizeForLog } from "../../../../packages/terminal-core/src/ansi.js";
 import { resolveAgentWorkspaceDir, tryResolveDefaultAgentId } from "../../../agents/agent-scope.js";
 import { CHANNEL_IDS } from "../../../channels/ids.js";
@@ -18,7 +19,6 @@ import {
   listOfficialExternalPluginCatalogEntries,
   resolveOfficialExternalPluginLookupIds,
 } from "../../../plugins/official-external-plugin-catalog.js";
-import { normalizePluginPolicyId } from "../../../plugins/plugin-policy-id.js";
 import { defaultSlotIdForKey, type PluginSlotKey } from "../../../plugins/slots.js";
 import { listMutableCodexRouteAgentEntries } from "./codex-route-agent-entries.js";
 import {
@@ -404,11 +404,15 @@ export function maybeRepairStalePluginConfig(
       const activePlugins = registryState.plugins.filter((plugin) =>
         isActivatedManifestOwner({ plugin, normalizedConfig: config, rootConfig: cfg }),
       );
-      const activePolicyIds = new Set(
-        activePlugins.map((plugin) => normalizePluginPolicyId(plugin.id)),
+      // Intentionally the case-folded declared id WITHOUT alias resolution: the
+      // rewritten allowlist below cannot distinguish a legacy alias from its
+      // target, so any active plugin whose alias-resolved id is not covered by a
+      // declared id pauses cleanup for manual disambiguation.
+      const activeDeclaredIds = new Set(
+        activePlugins.map((plugin) => normalizeOptionalLowercaseString(plugin.id) ?? ""),
       );
       const aliasedOwners = activePlugins.filter(
-        (plugin) => !activePolicyIds.has(normalizePluginId(plugin.id)),
+        (plugin) => !activeDeclaredIds.has(normalizePluginId(plugin.id)),
       );
       if (aliasedOwners.length > 0) {
         return {
