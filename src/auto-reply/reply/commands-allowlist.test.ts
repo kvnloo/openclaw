@@ -311,6 +311,18 @@ function buildAllowlistParams(
 }
 
 describe("handleAllowlistCommand", () => {
+  it("does not consume /allowlistXYZ so longer command names fall through", async () => {
+    // Fix #84572 contract: the character after the /allowlist prefix must be
+    // whitespace, a colon, or end-of-string.
+    const cfg = { commands: { text: true } } as OpenClawConfig;
+    const result = await handleAllowlistCommand(
+      buildAllowlistParams("/allowlistXYZ", cfg),
+      true,
+    );
+
+    expect(result).toBeNull();
+  });
+
   it("lists config and store allowFrom entries", async () => {
     readChannelAllowFromStoreMock.mockResolvedValueOnce(["456"]);
 

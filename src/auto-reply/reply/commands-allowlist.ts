@@ -84,6 +84,12 @@ function parseAllowlistCommand(raw: string): AllowlistCommand | null {
   if (!trimmedLower.startsWith("/allowlist")) {
     return null;
   }
+  // Fix #84572: enforce a boundary after the prefix so a longer command name
+  // like /allowlistXYZ is not consumed by this handler.
+  const charAfter = trimmed.charAt("/allowlist".length);
+  if (charAfter && !/[\s:]/.test(charAfter)) {
+    return null;
+  }
   const rest = trimmed.slice("/allowlist".length).trim();
   if (!rest) {
     return { action: "list", scope: "dm" };
