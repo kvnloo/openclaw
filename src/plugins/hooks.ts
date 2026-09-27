@@ -1464,6 +1464,9 @@ export function createHookRunner(
       event,
       ctx,
       {
+        // resolve_exec_env shapes the exec environment: a handler's event
+        // mutations must not leak into another plugin's resolution.
+        isolateEventPerHandler: true,
         mergeResults: (acc, next) => (acc ? { ...acc, ...next } : next),
       },
     );
@@ -1494,6 +1497,9 @@ export function createHookRunner(
   return {
     // Agent hooks
     runBeforeModelResolve: bindModifyingHook("before_model_resolve", {
+      // A handler may mutate its local event, but the mutation must not be
+      // observed by another plugin's handler.
+      isolateEventPerHandler: true,
       mergeResults: mergeBeforeModelResolve,
     }),
     runAgentTurnPrepare: bindModifyingHook("agent_turn_prepare", {
@@ -1553,6 +1559,9 @@ export function createHookRunner(
         event,
         ctx,
         {
+          // message_sending handlers may mutate their local event, but the
+          // mutation must not be observed by another plugin's handler.
+          isolateEventPerHandler: true,
           mergeResults: (acc, next) => ({
             content: lastDefined(acc?.content, next.content),
             cancel: stickyTrue(acc?.cancel, next.cancel),
