@@ -15,6 +15,7 @@ import {
   type NormalizedPluginsConfig as SharedNormalizedPluginsConfig,
 } from "./config-normalization-shared.js";
 import type { PluginOrigin } from "./plugin-origin.types.js";
+import { resolvePluginIdAlias } from "./plugin-policy-id.js";
 import { defaultSlotIdForKey } from "./slots.js";
 
 export type PluginActivationState = PluginActivationStateLike;
@@ -26,27 +27,17 @@ export type PluginActivationConfigSource = {
 
 export type NormalizedPluginsConfig = SharedNormalizedPluginsConfig;
 
-const BUILT_IN_PLUGIN_ALIAS_FALLBACKS: ReadonlyArray<readonly [alias: string, pluginId: string]> = [
-  ["google-gemini-cli", "google"],
-  ["minimax-portal", "minimax"],
-  ["minimax-portal-auth", "minimax"],
-] as const;
-const BUILT_IN_PLUGIN_ALIAS_LOOKUP = new Map<string, string>([
-  ...BUILT_IN_PLUGIN_ALIAS_FALLBACKS,
-  ...BUILT_IN_PLUGIN_ALIAS_FALLBACKS.map(([, pluginId]) => [pluginId, pluginId] as const),
-]);
+/** Normalizes user/config plugin ids into the canonical lowercase key form. */
+export function normalizePluginId(id: string): string {
+  return resolvePluginIdAlias(normalizeOptionalLowercaseString(id) ?? "");
+}
+
 const RETIRED_PLUGIN_IDS = new Set([
   "google-antigravity-auth",
   "google-gemini-cli-auth",
   "skill-workshop",
   "webhooks",
 ]);
-
-/** Normalizes user/config plugin ids into the canonical lowercase key form. */
-export function normalizePluginId(id: string): string {
-  const normalized = normalizeOptionalLowercaseString(id) ?? "";
-  return BUILT_IN_PLUGIN_ALIAS_LOOKUP.get(normalized) ?? normalized;
-}
 
 export function isRetiredPluginId(id: string): boolean {
   return RETIRED_PLUGIN_IDS.has(normalizePluginId(id));

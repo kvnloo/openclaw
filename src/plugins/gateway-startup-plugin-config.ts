@@ -40,6 +40,7 @@ import type {
   InstalledPluginIndexScopeLookup,
 } from "./installed-plugin-index-types.js";
 import type { PluginManifestRecord } from "./manifest-registry.js";
+import { normalizePluginPolicyId } from "./plugin-policy-id.js";
 import { normalizePluginsConfigWithRegistry } from "./plugin-registry-contributions.js";
 
 export function readStartupBundledDiscoveryMode(
@@ -138,11 +139,14 @@ export function blocksPluginStartup(params: {
   pluginsConfig: NormalizedPluginsConfig;
   activationSourcePlugins: NormalizedPluginsConfig;
 }): boolean {
+  // Policy lists are alias-resolved at normalization; resolve the declared id the
+  // same way or a legacy alias id escapes the denylist (fail-open).
+  const policyId = normalizePluginPolicyId(params.pluginId);
   return (
-    params.pluginsConfig.deny.includes(params.pluginId) ||
-    params.activationSourcePlugins.deny.includes(params.pluginId) ||
-    params.pluginsConfig.entries[params.pluginId]?.enabled === false ||
-    params.activationSourcePlugins.entries[params.pluginId]?.enabled === false
+    params.pluginsConfig.deny.includes(policyId) ||
+    params.activationSourcePlugins.deny.includes(policyId) ||
+    params.pluginsConfig.entries[policyId]?.enabled === false ||
+    params.activationSourcePlugins.entries[policyId]?.enabled === false
   );
 }
 

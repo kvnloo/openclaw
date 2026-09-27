@@ -33,6 +33,7 @@ import {
 } from "./gateway-startup-plugin-providers.js";
 import { collectConfiguredSpeechProviderIds } from "./gateway-startup-speech-providers.js";
 import type { PluginManifestRegistry } from "./manifest-registry.js";
+import { normalizePluginPolicyId } from "./plugin-policy-id.js";
 import { createPluginRegistryIdNormalizer } from "./plugin-registry-contributions.js";
 import type { PluginRegistrySnapshot } from "./plugin-registry-snapshot.js";
 import { collectConfiguredWorkerProviderIds } from "./worker-provider-config.js";
@@ -153,11 +154,14 @@ export function resolveGatewayStartupPluginPlanFromRegistry(params: {
     // Published install flows configure channels via plugins.entries, and
     // the channel config may only have {enabled: true} which does not
     // produce a `configuredChannelIds` entry.
+    // Policy lists are alias-resolved at normalization; resolve the declared id the
+    // same way or a legacy alias id escapes the denylist (fail-open).
+    const startupPolicyId = normalizePluginPolicyId(plugin.pluginId);
     const hasExplicitlyEnabledNonBundledChannel =
       plugin.origin !== "bundled" &&
       hasEnabledManifestChannel &&
-      pluginsConfig.entries[plugin.pluginId]?.enabled === true &&
-      !pluginsConfig.deny.includes(plugin.pluginId);
+      pluginsConfig.entries[startupPolicyId]?.enabled === true &&
+      !pluginsConfig.deny.includes(startupPolicyId);
     if (
       manifestChannelIds.some((channelId) => configuredChannelIds.has(channelId)) ||
       hasExplicitlyEnabledNonBundledChannel
