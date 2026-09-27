@@ -133,6 +133,7 @@ const hoisted = vi.hoisted(() => {
   const setTelegramThreadBindingMaxAgeBySessionKeyMock = vi.fn();
   const sessionBindingResolveByConversationMock = vi.fn();
   const sessionBindingUnbindMock = vi.fn();
+  const sessionBindingListBySessionMock = vi.fn();
   function createRuntimeChannel(
     id: string,
     resolveCommandConversation: (params: ResolveCommandConversationParams) => {
@@ -187,6 +188,7 @@ const hoisted = vi.hoisted(() => {
     setTelegramThreadBindingMaxAgeBySessionKeyMock,
     sessionBindingResolveByConversationMock,
     sessionBindingUnbindMock,
+    sessionBindingListBySessionMock,
     runtimeChannelRegistry,
   };
 });
@@ -253,7 +255,7 @@ vi.mock("../../infra/outbound/session-binding-service.js", () => {
     getSessionBindingService: () => ({
       bind: vi.fn(),
       getCapabilities: vi.fn(),
-      listBySession: vi.fn(),
+      listBySession: (key: unknown) => hoisted.sessionBindingListBySessionMock(key),
       resolveByConversation: (ref: unknown) => hoisted.sessionBindingResolveByConversationMock(ref),
       touch: vi.fn(),
       unbind: hoisted.sessionBindingUnbindMock,
@@ -477,6 +479,7 @@ describe("/session conversation bindings", () => {
     hoisted.setTelegramThreadBindingMaxAgeBySessionKeyMock.mockReset();
     hoisted.sessionBindingResolveByConversationMock.mockReset().mockReturnValue(null);
     hoisted.sessionBindingUnbindMock.mockReset().mockResolvedValue([]);
+    hoisted.sessionBindingListBySessionMock.mockReset().mockReturnValue([]);
     vi.useRealTimers();
   });
 
@@ -809,5 +812,96 @@ describe("/session conversation bindings", () => {
 
     expect(hoisted.setThreadBindingIdleTimeoutBySessionKeyMock).not.toHaveBeenCalled();
     expect(result?.reply?.text).toContain("Only owner-1 can update session lifecycle settings");
+  });
+
+  it("rejects lifecycle updates when a sibling binding sharing the session has a different owner", async () => {
+    hoisted.sessionBindingResolveByConversationMock.mockReturnValue(createThreadBinding());
+    hoisted.sessionBindingListBySessionMock.mockReturnValue([
+      createThreadBinding(),
+      createThreadBinding({
+        bindingId: "default:thread-2",
+        conversation: {
+          channel: THREAD_CHANNEL,
+          accountId: "default",
+          conversationId: "thread-2",
+          parentConversationId: "thread-2",
+        },
+        metadata: {
+          boundBy: "user-2",
+          lastActivityAt: Date.now(),
+          idleTimeoutMs: 24 * 60 * 60 * 1000,
+          maxAgeMs: 0,
+        },
+      }),
+    ]);
+
+    const result = await handleSessionCommand(createThreadCommandParams("/session idle 2h"), true);
+
+    expect(hoisted.setThreadBindingIdleTimeoutBySessionKeyMock).not.toHaveBeenCalled();
+    expect(result?.reply?.text).toContain("Only user-2 can update session lifecycle settings");
+  });
+
+  it("allows lifecycle updates when sibling bindings share the sender's ownership", async () => {
+    hoisted.sessionBindingResolveByConversationMock.mockReturnValue(createThreadBinding());
+    hoisted.sessionBindingListBySessionMock.mockReturnValue([
+      createThreadBinding(),
+      createThreadBinding({
+        bindingId: "default:thread-2",
+        conversation: {
+          channel: THREAD_CHANNEL,
+          accountId: "default",
+          conversationId: "thread-2",
+          parentConversationId: "thread-2",
+        },
+        metadata: {
+          boundBy: "user-1",
+          lastActivityAt: Date.now(),
+          idleTimeoutMs: 24 * 60 * 60 * 1000,
+          maxAgeMs: 0,
+        },
+      }),
+    ]);
+    hoisted.setThreadBindingIdleTimeoutBySessionKeyMock.mockReturnValue([
+      {
+        targetSessionKey: "agent:main:subagent:child",
+        boundAt: Date.now(),
+        lastActivityAt: Date.now(),
+        idleTimeoutMs: 2 * 60 * 60 * 1000,
+      },
+    ]);
+
+    const result = await handleSessionCommand(createThreadCommandParams("/session idle 2h"), true);
+
+    expect(hoisted.setThreadBindingIdleTimeoutBySessionKeyMock).toHaveBeenCalled();
+    expect(result?.reply?.text).toContain("Idle timeout set to");
+  });
+
+  it("ignores sibling bindings on other channels for lifecycle ownership", async () => {
+    hoisted.sessionBindingResolveByConversationMock.mockReturnValue(createThreadBinding());
+    hoisted.sessionBindingListBySessionMock.mockReturnValue([
+      createThreadBinding(),
+      createRoomBinding({
+        bindingId: "default:$thread-1",
+        metadata: {
+          boundBy: "user-2",
+          lastActivityAt: Date.now(),
+          idleTimeoutMs: 24 * 60 * 60 * 1000,
+          maxAgeMs: 0,
+        },
+      }),
+    ]);
+    hoisted.setThreadBindingIdleTimeoutBySessionKeyMock.mockReturnValue([
+      {
+        targetSessionKey: "agent:main:subagent:child",
+        boundAt: Date.now(),
+        lastActivityAt: Date.now(),
+        idleTimeoutMs: 2 * 60 * 60 * 1000,
+      },
+    ]);
+
+    const result = await handleSessionCommand(createThreadCommandParams("/session idle 2h"), true);
+
+    expect(hoisted.setThreadBindingIdleTimeoutBySessionKeyMock).toHaveBeenCalled();
+    expect(result?.reply?.text).toContain("Idle timeout set to");
   });
 });

@@ -475,6 +475,30 @@ export const handleSessionCommand: CommandHandler = async (params, allowTextComm
     return sessionCommandReply(resolveSessionCommandUsage());
   }
 
+  // The channel plugin fans idle/max-age updates out to every binding sharing
+  // the session key, so ownership must hold for all affected bindings — not
+  // just the current conversation's binding checked above. Otherwise one
+  // binding owner could retune (or auto-expire) a different owner's binding.
+  const lifecycleSenderId = normalizeOptionalString(params.command.senderId) ?? "";
+  if (lifecycleSenderId) {
+    const siblingBindings =
+      sessionBindingService.listBySession(activeBinding.targetSessionKey) ?? [];
+    for (const sibling of siblingBindings) {
+      if (sibling.bindingId === activeBinding.bindingId) {
+        continue;
+      }
+      if (sibling.conversation?.channel !== bindingContext.channel) {
+        continue;
+      }
+      const siblingBoundBy = resolveSessionBindingBoundBy(sibling);
+      if (siblingBoundBy && siblingBoundBy !== "system" && siblingBoundBy !== lifecycleSenderId) {
+        return sessionCommandReply(
+          `⚠️ Only ${siblingBoundBy} can update session lifecycle settings for a conversation sharing this session.`,
+        );
+      }
+    }
+  }
+
   const updatedBindings =
     action === SESSION_ACTION_IDLE
       ? setChannelConversationBindingIdleTimeoutBySessionKey({
