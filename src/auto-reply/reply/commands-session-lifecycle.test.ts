@@ -539,6 +539,57 @@ describe("/session conversation bindings", () => {
     expect(hoisted.sessionBindingUnbindMock).not.toHaveBeenCalled();
   });
 
+  it("denies a non-owner unbind of a system-managed binding", async () => {
+    hoisted.sessionBindingResolveByConversationMock.mockReturnValue(
+      createThreadBinding({ metadata: { boundBy: "system" } }),
+    );
+
+    const result = await handleSessionCommand(
+      createThreadCommandParams("/session unbind", { SenderId: "other-user" }),
+      true,
+    );
+
+    expect(result?.reply?.text).toContain("Only the owner can unbind");
+    expect(hoisted.sessionBindingUnbindMock).not.toHaveBeenCalled();
+  });
+
+  it("denies a non-owner unbind of a plugin binding with no recorded binder", async () => {
+    hoisted.sessionBindingResolveByConversationMock.mockReturnValue(
+      createThreadBinding({ metadata: {} }),
+    );
+
+    const result = await handleSessionCommand(
+      createThreadCommandParams("/session unbind", { SenderId: "other-user" }),
+      true,
+    );
+
+    expect(result?.reply?.text).toContain("Only the owner can unbind");
+    expect(hoisted.sessionBindingUnbindMock).not.toHaveBeenCalled();
+  });
+
+  it("lets the owner unbind a system-managed binding", async () => {
+    hoisted.sessionBindingResolveByConversationMock.mockReturnValue(
+      createThreadBinding({ metadata: { boundBy: "system" } }),
+    );
+    const params = createThreadCommandParams("/session unbind", { SenderId: "owner-1" });
+    params.command.senderIsOwner = true;
+
+    const result = await handleSessionCommand(params, true);
+
+    expect(result?.reply?.text).toBe("✅ Conversation unbound.");
+    expect(hoisted.sessionBindingUnbindMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("denies unbind when the sender identity is missing", async () => {
+    hoisted.sessionBindingResolveByConversationMock.mockReturnValue(createThreadBinding());
+    const params = createThreadCommandParams("/session unbind", { SenderId: undefined });
+
+    const result = await handleSessionCommand(params, true);
+
+    expect(result?.reply?.text).toContain("Only user-1 can unbind this conversation.");
+    expect(hoisted.sessionBindingUnbindMock).not.toHaveBeenCalled();
+  });
+
   it.each(["/session unbind other-session", "/session unbind all"])(
     "does not accept a detach target in %s",
     async (command) => {

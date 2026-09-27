@@ -413,7 +413,18 @@ export const handleSessionCommand: CommandHandler = async (params, allowTextComm
   if (action === SESSION_ACTION_UNBIND || durationArgRaw) {
     const senderId = normalizeOptionalString(params.command.senderId) ?? "";
     const boundBy = resolveSessionBindingBoundBy(activeBinding);
-    if (boundBy && boundBy !== "system" && senderId && senderId !== boundBy) {
+    const isOwner = params.command.senderIsOwner === true;
+    if (boundBy === "system" || !boundBy) {
+      // System-managed and plugin-owned bindings record no accountable sender,
+      // so only the owner may detach or retune them.
+      if (!isOwner) {
+        return sessionCommandReply(
+          action === SESSION_ACTION_UNBIND
+            ? "⚠️ Only the owner can unbind a system-managed conversation binding."
+            : "⚠️ Only the owner can update session lifecycle settings for a system-managed conversation binding.",
+        );
+      }
+    } else if (!senderId || senderId !== boundBy) {
       return sessionCommandReply(
         action === SESSION_ACTION_UNBIND
           ? `⚠️ Only ${boundBy} can unbind this conversation.`
