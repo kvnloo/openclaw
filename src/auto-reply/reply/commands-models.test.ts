@@ -190,6 +190,13 @@ describe("handleModelsCommand", () => {
     expect(authCheckerParams?.workspaceDir).toBe("/tmp");
   });
 
+  it("does not consume /modelsXYZ so longer command names fall through", async () => {
+    // Fix #84572 contract: the character after the /models prefix must be
+    // whitespace, a colon, or end-of-string.
+    expect(await handleModelsCommand(buildParams("/modelsXYZ"), true)).toBeNull();
+    expect(await handleModelsCommand(buildParams("/models-check"), true)).toBeNull();
+  });
+
   it("reads published facts and uses static auth checks for default browse", async () => {
     await handleModelsCommand(buildParams("/models"), true);
 

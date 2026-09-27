@@ -570,6 +570,15 @@ function parseListArgs(tokens: string[]): Extract<ParsedModelsCommand, { action:
   };
 }
 
+/**
+ * Enforces the #84572 command-boundary contract for /models: the character after
+ * the prefix must be whitespace, a colon, or end-of-string, so a longer command
+ * name like /modelsXYZ is not consumed by this handler.
+ */
+function isModelsCommandBody(body: string): boolean {
+  return /^\/models(?=[\s:]|$)/.test(body.trim());
+}
+
 function parseModelsArgs(raw: string): ParsedModelsCommand {
   const trimmed = raw.trim();
   if (!trimmed) {
@@ -750,7 +759,7 @@ export async function resolveModelsCommandReply(
   params: ModelsCommandReplyParams,
 ): Promise<ReplyPayload | null> {
   const body = params.commandBodyNormalized.trim();
-  if (!body.startsWith("/models")) {
+  if (!isModelsCommandBody(body)) {
     return null;
   }
 
@@ -967,7 +976,7 @@ export const handleModelsCommand: CommandHandler = async (params, allowTextComma
     return null;
   }
   const commandBodyNormalized = params.command.commandBodyNormalized.trim();
-  if (!commandBodyNormalized.startsWith("/models")) {
+  if (!isModelsCommandBody(commandBodyNormalized)) {
     return null;
   }
   const parsed = parseModelsArgs(commandBodyNormalized.replace(/^\/models\b/i, "").trim());
