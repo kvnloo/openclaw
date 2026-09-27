@@ -476,9 +476,10 @@ export const handleSessionCommand: CommandHandler = async (params, allowTextComm
   }
 
   // The channel plugin fans idle/max-age updates out to every binding sharing
-  // the session key, so ownership must hold for all affected bindings — not
-  // just the current conversation's binding checked above. Otherwise one
-  // binding owner could retune (or auto-expire) a different owner's binding.
+  // the session key within this channel and account, so ownership must hold
+  // for all affected bindings — not just the current conversation's binding
+  // checked above. Otherwise one binding owner could retune (or auto-expire)
+  // a different owner's binding.
   const lifecycleSenderId = normalizeOptionalString(params.command.senderId) ?? "";
   if (lifecycleSenderId) {
     const siblingBindings =
@@ -487,7 +488,10 @@ export const handleSessionCommand: CommandHandler = async (params, allowTextComm
       if (sibling.bindingId === activeBinding.bindingId) {
         continue;
       }
-      if (sibling.conversation?.channel !== bindingContext.channel) {
+      if (
+        sibling.conversation?.channel !== bindingContext.channel ||
+        sibling.conversation?.accountId !== bindingContext.accountId
+      ) {
         continue;
       }
       const siblingBoundBy = resolveSessionBindingBoundBy(sibling);

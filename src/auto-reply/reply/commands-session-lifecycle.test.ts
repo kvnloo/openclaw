@@ -904,4 +904,39 @@ describe("/session conversation bindings", () => {
     expect(hoisted.setThreadBindingIdleTimeoutBySessionKeyMock).toHaveBeenCalled();
     expect(result?.reply?.text).toContain("Idle timeout set to");
   });
+
+  it("ignores sibling bindings on other accounts for lifecycle ownership", async () => {
+    hoisted.sessionBindingResolveByConversationMock.mockReturnValue(createThreadBinding());
+    hoisted.sessionBindingListBySessionMock.mockReturnValue([
+      createThreadBinding(),
+      createThreadBinding({
+        bindingId: "other-account:thread-2",
+        conversation: {
+          channel: THREAD_CHANNEL,
+          accountId: "other-account",
+          conversationId: "thread-2",
+          parentConversationId: "thread-2",
+        },
+        metadata: {
+          boundBy: "user-2",
+          lastActivityAt: Date.now(),
+          idleTimeoutMs: 24 * 60 * 60 * 1000,
+          maxAgeMs: 0,
+        },
+      }),
+    ]);
+    hoisted.setThreadBindingIdleTimeoutBySessionKeyMock.mockReturnValue([
+      {
+        targetSessionKey: "agent:main:subagent:child",
+        boundAt: Date.now(),
+        lastActivityAt: Date.now(),
+        idleTimeoutMs: 2 * 60 * 60 * 1000,
+      },
+    ]);
+
+    const result = await handleSessionCommand(createThreadCommandParams("/session idle 2h"), true);
+
+    expect(hoisted.setThreadBindingIdleTimeoutBySessionKeyMock).toHaveBeenCalled();
+    expect(result?.reply?.text).toContain("Idle timeout set to");
+  });
 });
