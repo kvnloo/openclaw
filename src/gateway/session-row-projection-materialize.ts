@@ -16,6 +16,7 @@ import {
   isIncognitoOpenClawAgentSqlitePath,
   resolveIncognitoOpenClawAgentSqlitePath,
 } from "../state/openclaw-agent-db.paths.js";
+import type { SessionRepositoryWorkspaceRecord } from "../state/session-repository-workspaces.types.js";
 import { readSessionRowFacts } from "./server-methods/session-placement-read-projection.js";
 import { readSessionListSelectionFacts } from "./session-list-target.js";
 import { isColdArchivedSessionRow } from "./session-row-projection-archive.js";
@@ -29,6 +30,52 @@ import {
   createGatewaySessionEntryReader,
   resolveGatewaySessionStoreTargetWithStore,
 } from "./session-utils-store-lookup.js";
+
+/** Exact descriptions use the projection's custody and materialization owners in one frame. */
+export function createSessionRowDescriptionReader(owner: {
+  runInOwner: <T>(consume: () => T) => T;
+  prepare: () => boolean;
+  lookup: (query: records.Lookup) => records.Row | undefined;
+  dirty: ReadonlySet<string>;
+  refresh: (ids: string[]) => void;
+  describeArchived: (row: records.Row | undefined) => records.Row | undefined;
+  isCurrent: (row: records.Row) => boolean;
+  materializePrivate: (
+    row: records.Row,
+    repositoryWorkspace?: Readonly<SessionRepositoryWorkspaceRecord> | null,
+  ) => void;
+  preparePresentation: (row: records.MaterializedRow) => void;
+}) {
+  return (
+    query: records.Lookup,
+    captured?: records.Row,
+    repositoryWorkspace?: Readonly<SessionRepositoryWorkspaceRecord> | null,
+  ) =>
+    owner.runInOwner(() => {
+      if (!owner.prepare()) {
+        return undefined;
+      }
+      let row = owner.lookup(query);
+      if (row && isIncognitoSessionKey(row.key)) {
+        owner.materializePrivate(row, repositoryWorkspace);
+      } else {
+        if (row && owner.dirty.has(records.identity(row))) {
+          // Keyed reads refresh only their owner; unrelated bulk work never gates a response.
+          owner.refresh([records.identity(row)]);
+          row = owner.lookup(query);
+        }
+        row = owner.describeArchived(row);
+      }
+      if (captured && !owner.isCurrent(captured)) {
+        return undefined;
+      }
+      if (!records.ready(row)) {
+        return undefined;
+      }
+      owner.preparePresentation(row);
+      return row;
+    });
+}
 
 /** One synchronous refresh slice shares agent policy; each later slice starts fresh. */
 function createSessionRowMaterializationBatch(): typeof readResidentSessionRow {
@@ -112,7 +159,7 @@ export function createSessionRowMaterializer(owner: {
     accept(
       ids: readonly string[],
       facts: ReadonlyMap<string, records.PreparedSessionRowDatabaseFacts>,
-      materializeArchived = false,
+      options: { archived?: boolean; materialize?: boolean } = {},
     ) {
       if (!owner.isActive()) {
         return;
@@ -135,7 +182,7 @@ export function createSessionRowMaterializer(owner: {
           if (row && databaseFacts) {
             row.preparedAcpMeta = databaseFacts.acpMeta;
           }
-          if (row && isColdArchivedSessionRow(row) && !materializeArchived) {
+          if (row && isColdArchivedSessionRow(row) && !options.archived) {
             owner.dirty.delete(id);
             owner.forgetBackfill(id);
           } else if (row) {
@@ -144,7 +191,9 @@ export function createSessionRowMaterializer(owner: {
           }
         }
       });
-      refresh(ids, true);
+      if (options.materialize !== false) {
+        refresh(ids, true);
+      }
     },
   };
 }
@@ -163,6 +212,7 @@ export function readResidentSessionRow(
     links: SessionChildLink[];
     readSourceEntry: (key: string) => records.Row["storedEntry"];
     databaseFacts?: records.PreparedSessionRowDatabaseFacts;
+    repositoryWorkspace?: Readonly<SessionRepositoryWorkspaceRecord> | null;
   },
   activitySummaryEnabledByAgent?: Map<string, boolean>,
 ) {
@@ -181,6 +231,9 @@ export function readResidentSessionRow(
     ...row,
     cfg,
     preparedAcpMeta: params.databaseFacts ? params.databaseFacts.acpMeta : row.preparedAcpMeta,
+    preparedRepositoryWorkspace: params.databaseFacts
+      ? params.databaseFacts.repositoryWorkspace
+      : params.repositoryWorkspace,
     configuredAgentIds: params.configuredAgentIds,
     store: source?.store ?? {},
     storePath: row.storeTarget.storePath,

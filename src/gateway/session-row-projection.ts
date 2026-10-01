@@ -1,5 +1,5 @@
 import { AsyncLocalStorage } from "node:async_hooks";
-import { listAgentIds, withAgentRosterFactsBatch } from "../agents/agent-scope-config.js";
+import { listAgentIds } from "../agents/agent-scope-config.js";
 import { createSubagentSessionListReadView } from "../agents/subagents/registry/subagent-registry-state.js";
 import { cloneEnvWithPlatformSemantics } from "../config/config-env-vars.js";
 import { isInternalSessionEffectsKey } from "../config/sessions/internal-session-key.js";
@@ -41,6 +41,7 @@ import { createSessionRowProjectionContext } from "./session-row-projection-cont
 import { createSessionRowGenerationObservations } from "./session-row-projection-generation.js";
 import { createSessionRowCreatorIndex } from "./session-row-projection-identities.js";
 import {
+  createSessionRowDescriptionReader,
   lookupSessionRow,
   findSessionRowById,
   readResidentSessionRow,
@@ -52,7 +53,7 @@ import {
   createSessionRowScopeMatcher,
   prepareSessionRowScopes,
   selectMatchingSessionRows,
-  selectSessionRowEntries,
+  createSessionRowEntrySelector,
 } from "./session-row-scope.js";
 
 /** Committed publications own invalidation; each admitted physical store is hydrated once. */
@@ -386,6 +387,7 @@ export async function createSessionRowProjection(params: records.ProjectionOptio
     configuredAgentIds = new Set(listAgentIds(cfg)),
     readRow = readResidentSessionRow,
     databaseFacts?: records.PreparedSessionRowDatabaseFacts,
+    repositoryWorkspace?: Parameters<typeof readResidentSessionRow>[0]["repositoryWorkspace"],
   ) {
     if (!row.entry) {
       return false;
@@ -406,6 +408,7 @@ export async function createSessionRowProjection(params: records.ProjectionOptio
       links,
       readSourceEntry: (key) => readSourceEntry(row, key, databaseFacts !== undefined),
       databaseFacts,
+      repositoryWorkspace,
     });
     if (!isIncognitoSessionKey(row.key) && rows.get(records.identity(row)) !== row) {
       return false;
@@ -424,13 +427,15 @@ export async function createSessionRowProjection(params: records.ProjectionOptio
     refresh,
     refreshBatch,
     prepareExactRows,
+    prepareSelection,
+    selectionNeedsPreparation,
+    withSelectionPreparation,
     retainExactPreparation,
     assertExactRowsPrepared,
     dispose: disposeRefresh,
   } = createSessionRowRefresh({
     rows,
     dirty,
-    registrySnapshot: subagents.snapshotIdentity,
     env,
     state: () => ({
       cfg,
@@ -523,32 +528,21 @@ export async function createSessionRowProjection(params: records.ProjectionOptio
     metadata.prepare(epoch, cfg, matching, put, referenced);
     return true;
   }
-  const describe = (query: records.Lookup, captured?: records.Row) =>
-    inOwnerContext(() => {
-      if (disposed || !prepareRead()) {
-        return undefined;
-      }
-      let row = lookup(query);
-      if (row && isIncognitoSessionKey(row.key)) {
-        materialize(row);
-      } else {
-        if (row && dirty.has(records.identity(row))) {
-          // Keyed reads refresh only their owner; unrelated bulk work never gates a response.
-          refresh([records.identity(row)]);
-          row = lookup(query);
-        }
-        row = archive.describe(row);
-      }
-      if (captured && !isCurrent(captured)) {
-        return undefined;
-      }
-      if (!records.ready(row)) {
-        return undefined;
-      }
+  const describe = createSessionRowDescriptionReader({
+    runInOwner: inOwnerContext,
+    prepare: () => !disposed && prepareRead(),
+    lookup,
+    dirty,
+    refresh,
+    describeArchived: (row) => archive.describe(row),
+    isCurrent,
+    materializePrivate: (row, repository) =>
+      materialize(row, undefined, undefined, undefined, repository),
+    preparePresentation(row) {
       row.materialized.source.cfg = cfg;
       metadata.preparePresentation(row, readChildLinks);
-      return row;
-    });
+    },
+  });
   function dispose() {
     revisions.invalidate(true);
     disposed = true;
@@ -569,32 +563,22 @@ export async function createSessionRowProjection(params: records.ProjectionOptio
     creators.dispose();
     archive.clear();
   }
-  function selectEntries(query: records.Query = {}) {
-    if (disposed) {
-      return [];
-    }
-    return inOwnerContext(() => {
-      if (!prepareRead()) {
-        throw new Error("Session row topology changed; prepare current facts before reading");
-      }
-      return withAgentRosterFactsBatch(cfg, () =>
-        selectSessionRowEntries(
-          {
-            cfg,
-            scope,
-            byAgent,
-            byParent,
-            rows,
-            dirty,
-            matching,
-            acquire: (row) => acquireEntry(row, readSessionRowEntry(row)),
-            referenced,
-          },
-          query,
-        ),
-      );
-    });
-  }
+  const selectEntries = createSessionRowEntrySelector({
+    isActive: () => !disposed,
+    runAsOwner: inOwnerContext,
+    prepare: prepareRead,
+    state: () => ({
+      cfg,
+      scope,
+      byAgent,
+      byParent,
+      rows,
+      dirty,
+      matching,
+      acquire: (row) => acquireEntry(row, readSessionRowEntry(row)),
+      referenced,
+    }),
+  });
   await inOwnerContext(async () => {
     await ensureSessionGroupCatalog();
     for (;;) {
@@ -644,6 +628,7 @@ export async function createSessionRowProjection(params: records.ProjectionOptio
       referenced,
       lookup,
       prepareExactRows,
+      prepareSelection,
       retainExactPreparation,
       assertExactRowsPrepared,
       retainArchiveRows: archive.retainRows,
@@ -655,10 +640,13 @@ export async function createSessionRowProjection(params: records.ProjectionOptio
         needsPreparation: needsExactMembershipPreparation,
       },
       isActive: () => !disposed,
-      projection: (): SessionRowReadView & { isCurrent(row: records.Row): boolean } => projection,
+      projection: (): SessionRowReadView & {
+        isCurrent(row: records.Row): boolean;
+        getPolicyConfig: typeof getPolicyConfig;
+      } => projection,
     }),
     setArchivePageSize: archive.setPageSize,
-    modelFacts(query: records.Lookup) {
+    modelFacts(query: records.Lookup, metadataPrepared = false) {
       const row = lookup(query);
       if (!records.hasEntry(row)) {
         throw new Error("Session changed while preparing search facts; retry the request");
@@ -666,7 +654,10 @@ export async function createSessionRowProjection(params: records.ProjectionOptio
       return readSessionRowModelFacts({
         cfg,
         ...row,
-        source: { entry: row.storedEntry, readSourceEntry: (key) => readSourceEntry(row, key) },
+        source: {
+          entry: row.storedEntry,
+          readSourceEntry: (key) => readSourceEntry(row, key, metadataPrepared),
+        },
         modelCatalog: catalog.current,
         rowContext: metadata.current,
       });
@@ -674,6 +665,13 @@ export async function createSessionRowProjection(params: records.ProjectionOptio
     present: (record: records.MaterializedRow, options?: records.SnapshotOptions) =>
       records.present(record, metadata.current, options),
     ensureMaterialized,
+    prepareSelection,
+    withSelectionPreparation,
+    needsSelectionPreparation: selectionNeedsPreparation,
+    isMaterialized(query: records.Lookup) {
+      const row = lookup(query);
+      return row !== undefined && !dirty.has(records.identity(row)) && records.ready(row);
+    },
     ...membershipRead,
     get materializedCount() {
       return materializedCount;

@@ -14,13 +14,14 @@ import * as databaseContext from "./update-command-database-context.js";
 import { installFreshUpdateFixture, targetMetadata } from "./update-command-fresh.test-support.js";
 import * as runtimeRecovery from "./update-command-node-runtime-resolution.js";
 import * as packageUpdate from "./update-command-package.js";
+import { stubNodeRuntime } from "./update-command-runtime-recovery.test-support.js";
 import { updateCommand } from "./update-command.js";
 
 vi.mock("../../infra/container-environment.js", () => ({ isContainerEnvironment: () => false }));
 
 const { fixture } = installFreshUpdateFixture();
 it.each([
-  { name: "no restart", restart: false },
+  { name: "no restart", restart: false, debugCapture: true },
   { name: "replacement" },
   { name: "compatible", compatible: true },
   { name: "foreign service", owned: false },
@@ -28,7 +29,7 @@ it.each([
   { name: "current sealed service", current: true, refresh: false },
   { name: "current no restart", current: true, restart: false },
   { name: "current stopped service", current: true, running: false },
-  { name: "text refusal", restart: false, json: false },
+  { name: "text refusal", restart: false, json: false, debugCapture: true },
 ])(
   "previews installed package runtime admission without mutation ($name)",
   async ({
@@ -39,7 +40,12 @@ it.each([
     json = true,
     owned = true,
     running = true,
+    debugCapture = false,
   }) => {
+    stubNodeRuntime();
+    vi.stubEnv("OPENCLAW_DEBUG_PROXY_ENABLED", debugCapture ? "yes" : "0");
+    vi.stubEnv("OPENCLAW_DEBUG_PROXY_URL", undefined);
+    vi.stubEnv("OPENCLAW_DEBUG_PROXY_REQUIRE", undefined);
     fixture.managedServiceNodeRunner = "/service/node";
     const provisionRuntime = vi
       .spyOn(runtimeRecovery, "resolveTargetNodeRuntime")
@@ -109,6 +115,13 @@ it.each([
 
     await updateCommand({ ...opts, dryRun: true });
 
+    const captureNotices = vi
+      .mocked(defaultRuntime.error)
+      .mock.calls.filter(
+        ([message]) =>
+          message === "Warning: Debug HTTP capture is disabled during update dry runs.",
+      );
+    expect(captureNotices).toHaveLength(debugCapture ? 1 : 0);
     const preview = vi.mocked(defaultRuntime.writeJson).mock.calls.at(-1)?.[0];
     const notes = json ? JSON.stringify(preview) : log.mock.calls.flat().join("\n");
     const replacement = !compatible && restart && owned && (!current || (running && refresh));
