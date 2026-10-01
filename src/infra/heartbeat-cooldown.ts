@@ -102,6 +102,9 @@ function checkFloodGuard(input: ShouldDeferInput): DeferDecision | null {
   // keeps floodThreshold runs inside the active window.
   inWindowTs.sort((a, b) => b - a);
   const thresholdOldestTs = inWindowTs[floodThreshold - 1];
+  if (thresholdOldestTs === undefined) {
+    return null;
+  }
   return { defer: true, reason: "flood", retryAtMs: thresholdOldestTs + floodWindow + 1 };
 }
 
