@@ -230,13 +230,15 @@ describe("startHeartbeatRunner", () => {
 
     const manualAt = async (ts: number) => {
       vi.setSystemTime(new Date(ts));
-      await requestHeartbeatAndWait({
+      const pending = requestHeartbeatAndWait({
         source: "manual",
         intent: "manual",
         reason: "manual",
         agentId: "main",
         coalesceMs: 0,
       });
+      await vi.advanceTimersByTimeAsync(1);
+      await pending;
     };
 
     await manualAt(990_000);
@@ -248,7 +250,7 @@ describe("startHeartbeatRunner", () => {
     expect(runSpy).toHaveBeenCalledTimes(6);
 
     vi.setSystemTime(new Date(1_000_000));
-    const deferral = await requestHeartbeatAndWait({
+    const pendingDeferral = requestHeartbeatAndWait({
       source: "interval",
       intent: "scheduled",
       reason: "interval",
@@ -256,6 +258,8 @@ describe("startHeartbeatRunner", () => {
       scheduledEveryMs: 30 * 60_000,
       coalesceMs: 0,
     });
+    await vi.advanceTimersByTimeAsync(1);
+    const deferral = await pendingDeferral;
 
     expect(runSpy).toHaveBeenCalledTimes(6);
     expect(deferral).toEqual({
