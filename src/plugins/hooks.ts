@@ -825,8 +825,17 @@ export function createHookRunner(
       let handlerResult: TResult | void = undefined;
       try {
         const invokeHandler = async (): Promise<TResult | void> => {
+          // Claiming hooks run first-claim-wins: a handler that declines must not
+          // leave mutations visible to a later handler from another plugin.
+          // Matches the before_tool_call isolation invariant above (a plugin may
+          // mutate its local event, but direct writes must not alter the event
+          // observed by another plugin).
+          const handlerEvent = cloneHookIsolationValue(hookName, event);
           const promise = Promise.resolve(
-            (hook.handler as (event: unknown, ctx: unknown) => Promise<TResult | void>)(event, ctx),
+            (hook.handler as (event: unknown, ctx: unknown) => Promise<TResult | void>)(
+              handlerEvent,
+              ctx,
+            ),
           );
           return await awaitHook(hook, promise);
         };
