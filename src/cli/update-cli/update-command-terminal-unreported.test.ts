@@ -29,7 +29,20 @@ const mocks = vi.hoisted(() => ({
   action: vi.fn<typeof import("./update-command-report.js").runInteractiveUpdateFailureAction>(),
   diagnose: vi.fn(),
   repair: vi.fn(),
+  ledgerRead: { failure: undefined as Error | undefined },
 }));
+vi.mock("../../infra/update-run-ledger.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../infra/update-run-ledger.js")>();
+  return {
+    ...actual,
+    getUpdateRun: ((...args) => {
+      if (mocks.ledgerRead.failure) {
+        throw mocks.ledgerRead.failure;
+      }
+      return actual.getUpdateRun(...args);
+    }) satisfies typeof actual.getUpdateRun,
+  };
+});
 vi.mock("../../commands/triage-failure.js", () => ({ triageAfterFailure: mocks.repair }));
 vi.mock("./update-command-report.js", () => ({
   runInteractiveUpdateFailureAction: mocks.action,
@@ -44,6 +57,7 @@ beforeEach(() => {
   mocks.action.mockReset();
   mocks.diagnose.mockReset();
   mocks.repair.mockReset();
+  mocks.ledgerRead.failure = undefined;
   vi.spyOn(defaultRuntime, "log").mockImplementation(() => {});
   vi.spyOn(defaultRuntime, "error").mockImplementation(() => {});
 });
@@ -308,3 +322,91 @@ it.each(["lost-authority", "pending-publication", "completed-publication"] as co
     }
   },
 );
+
+it("keeps recovery pending when publication fails and update history cannot be read", async () => {
+  const env = { OPENCLAW_STATE_DIR: dirs.make("update-unreported-unreadable-") };
+  const recorded = createUpdateRun({ trigger: "cli" }, { env });
+  const run = { runId: recorded.runId, env };
+  const onResult = vi.fn();
+  await expect(
+    withUpdateFailureTriage({ run }, { env }, () =>
+      withUpdateCommandTerminalResult(
+        async (registerRun) => {
+          registerRun(run);
+          deferUpdateCommandTerminalResult(run, async () => {
+            finishUpdateRun(run.runId, { status: "succeeded" }, { env });
+            mocks.ledgerRead.failure = new Error("Update history read failed");
+            throw new Error("Update publication failed");
+          });
+        },
+        { onResult },
+      ),
+    ),
+  ).rejects.toMatchObject({ code: 1 });
+  mocks.ledgerRead.failure = undefined;
+  expect(getUpdateRun(run.runId, { env })).toMatchObject({ status: "succeeded" });
+  expect(onResult).not.toHaveBeenCalled();
+  expect(mocks.action).not.toHaveBeenCalled();
+  expect(mocks.diagnose).not.toHaveBeenCalled();
+  expect(mocks.repair).not.toHaveBeenCalled();
+  const errors = vi
+    .mocked(defaultRuntime.error)
+    .mock.calls.map(([line]) => String(line))
+    .join("\n");
+  expect(errors).toContain("Update recovery remains pending (update-failed)");
+  expect(errors).toContain("Update history read failed");
+  const output = [
+    ...vi.mocked(defaultRuntime.log).mock.calls,
+    ...vi.mocked(defaultRuntime.error).mock.calls,
+  ]
+    .map(([line]) => String(line))
+    .join("\n");
+  expect(output).toContain("Update publication failed");
+});
+
+it("reports a failed-finalized run as pending recovery when its publication fails", async () => {
+  const env = { OPENCLAW_STATE_DIR: dirs.make("update-unreported-failed-") };
+  const created = createUpdateRun({ trigger: "cli" }, { env });
+  const run = { runId: created.runId, env };
+  const onResult = vi.fn();
+  let recorded = created;
+  await expect(
+    withUpdateFailureTriage({ run }, { env }, () =>
+      withUpdateCommandTerminalResult(
+        async (registerRun) => {
+          registerRun(run);
+          deferUpdateCommandTerminalResult(run, async () => {
+            recorded = finishUpdateRun(
+              run.runId,
+              { status: "failed", reason: "global-install-failed" },
+              { env },
+            );
+            throw new Error("Update publication failed");
+          });
+        },
+        { onResult },
+      ),
+    ),
+  ).rejects.toMatchObject({ code: 1 });
+  expect(recorded).toMatchObject({ status: "failed", reason: "global-install-failed" });
+  expect(getUpdateRun(run.runId, { env })).toEqual(recorded);
+  expect(onResult).not.toHaveBeenCalled();
+  expect(mocks.action).not.toHaveBeenCalled();
+  expect(mocks.diagnose).not.toHaveBeenCalled();
+  expect(mocks.repair).not.toHaveBeenCalled();
+  const errors = vi
+    .mocked(defaultRuntime.error)
+    .mock.calls.map(([line]) => String(line))
+    .join("\n");
+  // Characterization only: the durable failure reason is replaced by a synthesized
+  // pending result even though the ledger row is already terminal.
+  expect(errors).toContain("Update recovery remains pending (update-failed)");
+  expect(errors).toContain("Update history remains with its existing recovery owner.");
+  expect(errors).not.toContain("finalized as succeeded");
+  const summary = vi
+    .mocked(defaultRuntime.log)
+    .mock.calls.map(([line]) => String(line))
+    .join("\n");
+  expect(summary).toContain("OpenClaw update failed: update-failed.");
+  expect(summary).toContain("Update publication failed");
+});

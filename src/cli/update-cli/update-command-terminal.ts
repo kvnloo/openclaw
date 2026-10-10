@@ -191,7 +191,13 @@ export async function withUpdateCommandTerminalResult<T>(
         throw error;
       }
       if (run) {
-        const finalized = getUpdateRun(run.runId, { env: run.env });
+        let finalized: ReturnType<typeof getUpdateRun>;
+        try {
+          finalized = getUpdateRun(run.runId, { env: run.env });
+        } catch {
+          // Unreadable history cannot prove a finalized outcome; the settlement
+          // path below keeps the publication failure with pending recovery.
+        }
         if (finalized?.status === "succeeded") {
           defaultRuntime.error(
             `Update result publication failed after update history was already finalized as succeeded: ${formatErrorMessage(error)}`,
