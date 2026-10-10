@@ -211,6 +211,33 @@ function isBoardDataBindingId(value: string): value is BoardDataBindingId {
   return (CORE_BOARD_DATA_BINDING_IDS as readonly string[]).includes(value);
 }
 
+/**
+ * Board data bindings delegate to gateway handlers with the viewing operator's
+ * invocation, but the ticket binds the widget to exactly one session. Force
+ * session-targeting params to the ticket session so a widget cannot pivot the
+ * delegated read to another session (or another agent's aggregates) through
+ * widget-controlled params.
+ */
+function scopeBoardDataBindingParams(
+  method: string,
+  params: Record<string, unknown>,
+  boardSession: Required<BoardSessionTarget>,
+): Record<string, unknown> {
+  switch (method) {
+    case "cron.list":
+      // cron.list filters jobs by params.sessionKey; pin it to the ticket
+      // session so the widget cannot enumerate another session's job rows.
+      return { ...params, sessionKey: boardSession.sessionKey };
+    case "sessions.list":
+    case "usage.cost":
+      // These have no session param; fence them to the ticket's agent and drop
+      // any request for gateway-wide scope.
+      return { ...params, agentId: boardSession.agentId, agentScope: undefined };
+    default:
+      return params;
+  }
+}
+
 async function invokeGatewayHandler(
   handler: GatewayRequestHandlers[string],
   method: string,
@@ -223,12 +250,15 @@ async function invokeGatewayHandler(
     | { kind: "reply"; ok: boolean; payload: unknown; error: ErrorShape | undefined }
     | { kind: "thrown"; error: unknown }
     | undefined;
+  // The delegated handler runs with the operator's invocation; pin any
+  // session-targeting params to the ticket session before dispatch.
+  const scopedParams = scopeBoardDataBindingParams(method, params, authority.boardSession);
   await authority.useCurrent(async () => {
     try {
       await handler({
         ...invocation,
-        req: { ...invocation.req, method, params },
-        params,
+        req: { ...invocation.req, method, params: scopedParams },
+        params: scopedParams,
         respond: (ok, payload, error) => {
           outcome ??= { kind: "reply", ok, payload, error };
         },
