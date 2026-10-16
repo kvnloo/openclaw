@@ -241,12 +241,10 @@ describe("shouldDeferWake", () => {
       expect(lastRunStartedAtMs).toBe(recentRunStarts[recentRunStarts.length - 1]);
       expect(
         decide({
-          source: "exec-event",
           now,
           nextDueMs: 0,
           lastRunStartedAtMs,
           recentRunStarts,
-          reason: "exec-event",
         }),
       ).toEqual({ defer: true, reason: "flood", retryAtMs: 1_005_001 });
     });
